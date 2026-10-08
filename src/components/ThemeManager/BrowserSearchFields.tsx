@@ -48,8 +48,6 @@ export function BrowserSearchFields({
     });
   }
 
-  console.log(gamepadDialogClasses, gamepadSliderClasses);
-
   const formattedFilters = useMemo<{ filters: DropdownOption[]; order: DropdownOption[] }>(
     () => ({
       filters: [
