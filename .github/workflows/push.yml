@@ -12,10 +12,10 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7.0.1
 
     - name: Set up NodeJS 22
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7.1.0
       with:
         node-version: 22
   
@@ -42,7 +42,7 @@ jobs:
         zip -qr "../SDH-CssLoader-$version.zip" SDH-CssLoader
 
     - name: Upload package artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7.0.2
       with:
         name: SDH-CSSLoader-Decky
         path: SDH-CssLoader-*.zip
@@ -54,10 +54,10 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7.0.1
 
     - name: Set up Python 3.10.2
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v7.0.0
       with:
         python-version: "3.10.2"
 
@@ -74,7 +74,7 @@ jobs:
       run: pyinstaller --noconfirm --noconsole --onefile --add-data "./assets;/assets" --name "CssLoader-Standalone-Headless" ./main.py ./css_win_tray.py
 
     - name: Upload package artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7.0.2
       with:
         name: SDH-CSSLoader-Win-Standalone
         path: |
@@ -92,12 +92,12 @@ jobs:
 
     steps:
     - name: Checkout release tag
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7.0.1
       with:
         fetch-depth: 0
 
     - name: Download release assets
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8.0.2
       with:
         path: release-assets
         merge-multiple: true
