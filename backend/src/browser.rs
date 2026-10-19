@@ -472,10 +472,20 @@ impl Browser {
                     .pointer("/params/targetInfo/type")
                     .and_then(Value::as_str)
                     == Some("page")
-                    && let Some(id) = event
-                        .pointer("/params/targetInfo/targetId")
-                        .and_then(Value::as_str)
+                    && let Some(info) = event.pointer("/params/targetInfo")
+                    && let Some(id) = info.get("targetId").and_then(Value::as_str)
                 {
+                    let text = |key| {
+                        info.get(key)
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned()
+                    };
+                    // Remember the target so a following targetInfoChanged does not attach a second time.
+                    self.pending_target_info
+                        .lock()
+                        .await
+                        .insert(id.to_owned(), (text("title"), text("url")));
                     let _ = cdp
                         .command(
                             "Target.attachToTarget",
@@ -537,10 +547,23 @@ impl Browser {
                             backend.force_reinject(id).await;
                         }
                     } else {
-                        self.pending_target_info
+                        // Steam's CEF announces new windows as type "other"; they become pages only here.
+                        let first_seen = self
+                            .pending_target_info
                             .lock()
                             .await
-                            .insert(id.to_owned(), (title, url));
+                            .insert(id.to_owned(), (title, url))
+                            .is_none();
+                        if first_seen {
+                            let _ = cdp
+                                .command(
+                                    "Target.attachToTarget",
+                                    json!({"targetId": id, "flatten": true}),
+                                    None,
+                                    false,
+                                )
+                                .await;
+                        }
                     }
                 }
             }
