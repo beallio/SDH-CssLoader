@@ -1,7 +1,7 @@
-import { callBackend, toast } from "../../python";
+import { callBackend, callBackendAs, isString, toast } from "../../python";
 
 export async function booleanStoreRead(key: string) {
-  const deckyRes = await callBackend<string>("store_read", key);
+  const deckyRes = await callBackendAs(isString, "store_read", key);
   if (!deckyRes.success) {
     toast(`Error fetching ${key}`, deckyRes.result);
     return false;
@@ -17,7 +17,7 @@ export async function booleanStoreWrite(key: string, value: boolean) {
 }
 
 export async function stringStoreRead(key: string) {
-  const deckyRes = await callBackend<string>("store_read", key);
+  const deckyRes = await callBackendAs(isString, "store_read", key);
   if (!deckyRes.success) {
     toast(`Error fetching ${key}`, deckyRes.result);
     return "";

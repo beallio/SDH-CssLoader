@@ -1,4 +1,4 @@
-import { callBackend, storeRead, toast } from "../../python";
+import { callBackend, callBackendAs, isBoolean, isString, storeRead, toast } from "../../python";
 import { globalState } from "../pythonRoot";
 import { booleanStoreRead, stringStoreRead } from "./storeUtils";
 
@@ -7,7 +7,7 @@ export function enableServer() {
 }
 
 export async function getServerState() {
-  const deckyRes = await callBackend<boolean>("get_server_state");
+  const deckyRes = await callBackendAs(isBoolean, "get_server_state");
   if (!deckyRes.success) {
     toast("Error fetching server state", deckyRes.result);
     return false;
@@ -16,7 +16,7 @@ export async function getServerState() {
 }
 
 export async function getWatchState() {
-  const deckyRes = await callBackend<boolean>("get_watch_state");
+  const deckyRes = await callBackendAs(isBoolean, "get_watch_state");
   if (!deckyRes.success) {
     toast("Error fetching watch state", deckyRes.result);
     return false;
@@ -37,7 +37,7 @@ export function setHiddenMotd(id: string) {
   return callBackend("store_write", "hiddenMotd", id);
 }
 export function getHiddenMotd() {
-  return callBackend<string>("store_read", "hiddenMotd");
+  return callBackendAs(isString, "store_read", "hiddenMotd");
 }
 
 export function fetchClassMappings() {

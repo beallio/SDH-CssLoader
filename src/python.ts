@@ -1,7 +1,7 @@
 // Code from https://github.com/NGnius/PowerTools/blob/dev/src/python.ts
 import { ServerAPI } from "decky-frontend-lib";
 import { CssLoaderState } from "./state";
-import { Theme, ThemeError } from "./ThemeTypes";
+import { Theme, ThemeError, isTheme, isThemeError } from "./ThemeTypes";
 import { bulkThemeUpdateCheck } from "./logic/bulkThemeUpdateCheck";
 
 export var server: ServerAPI | undefined = undefined;
@@ -26,22 +26,45 @@ declare global {
 let backend: DeckyBackend | undefined;
 
 // The fork's native backend refuses legacy callPluginMethod calls; use the API v1 positional route.
-export async function callBackend<T = unknown>(method: string, ...args: unknown[]): Promise<BackendResult<T>> {
+export async function callBackend(method: string, ...args: unknown[]): Promise<BackendResult<unknown>> {
   backend ??= window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit.connect(1, "CSS Loader");
   try {
-    // Unchecked: the backend owns the result shape, as it did with callPluginMethod.
-    return { success: true, result: (await backend.call(method, ...args)) as T };
+    return { success: true, result: await backend.call(method, ...args) };
   } catch (e) {
     return { success: false, result: String(e) };
   }
 }
+
+export async function callBackendAs<T>(
+  isResult: (value: unknown) => value is T,
+  method: string,
+  ...args: unknown[]
+): Promise<BackendResult<T>> {
+  const res = await callBackend(method, ...args);
+  if (!res.success) return res;
+  const { result } = res;
+  return isResult(result)
+    ? { success: true, result }
+    : { success: false, result: `${method} returned an unexpected result` };
+}
+
+export const isString = (value: unknown): value is string => typeof value === "string";
+export const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
+const isNumber = (value: unknown): value is number => typeof value === "number";
+const isThemeList = (value: unknown): value is Theme[] => Array.isArray(value) && value.every(isTheme);
+const isLoadErrors = (value: unknown): value is { fails: ThemeError[] } =>
+  typeof value === "object" &&
+  value !== null &&
+  "fails" in value &&
+  Array.isArray(value.fails) &&
+  value.fails.every(isThemeError);
 
 export async function openFilePicker(path: string) {
   return await server!.openFilePicker(path, true);
 }
 
 export function fetchThemePath() {
-  return callBackend<string>("fetch_theme_path");
+  return callBackendAs(isString, "fetch_theme_path");
 }
 
 export function resolve(promise: Promise<any>, setter: any) {
@@ -121,11 +144,11 @@ export async function changePreset(themeName: string, themeList: Theme[]) {
 
 export async function getInstalledThemes(): Promise<any> {
   const setGlobalState = globalState!.setGlobalState.bind(globalState);
-  const errorRes = await callBackend<{ fails: ThemeError[] }>("get_last_load_errors");
+  const errorRes = await callBackendAs(isLoadErrors, "get_last_load_errors");
   if (errorRes.success) {
     setGlobalState("themeErrors", errorRes.result.fails);
   }
-  const themeRes = await callBackend<Theme[]>("get_themes");
+  const themeRes = await callBackendAs(isThemeList, "get_themes");
   if (themeRes.success) {
     setGlobalState("localThemeList", themeRes.result);
     return themeRes.result;
@@ -133,13 +156,13 @@ export async function getInstalledThemes(): Promise<any> {
 }
 
 export async function reloadBackend(): Promise<void> {
-  return callBackend<{ fails: ThemeError[] }>("reset").then((res) => {
+  return callBackendAs(isLoadErrors, "reset").then((res) => {
     return getInstalledThemes();
   });
 }
 
 export function getThemes() {
-  return callBackend<Theme[]>("get_themes");
+  return callBackendAs(isThemeList, "get_themes");
 }
 
 export function setThemeState(
@@ -189,7 +212,7 @@ export function deleteTheme(themeName: string): Promise<any> {
 }
 
 export function storeRead(key: string) {
-  return callBackend<string>("store_read", key);
+  return callBackendAs(isString, "store_read", key);
 }
 
 export function storeWrite(key: string, value: string) {
@@ -200,12 +223,12 @@ export function enableServer() {
   return callBackend("enable_server");
 }
 export function getServerState() {
-  return callBackend<boolean>("get_server_state");
+  return callBackendAs(isBoolean, "get_server_state");
 }
 
 export function getBackendVersion(): Promise<any> {
   const setGlobalState = globalState!.setGlobalState.bind(globalState);
-  return callBackend<number>("get_backend_version").then((data) => {
+  return callBackendAs(isNumber, "get_backend_version").then((data) => {
     if (data.success) {
       setGlobalState("backendVersion", data.result);
     }
@@ -214,7 +237,7 @@ export function getBackendVersion(): Promise<any> {
 }
 
 export function dummyFunction() {
-  return callBackend<boolean>("dummy_function");
+  return callBackendAs(isBoolean, "dummy_function");
 }
 
 export function genericGET(fetchUrl: string, authToken?: string | undefined) {
