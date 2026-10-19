@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, LazyLock, Weak,
         atomic::{AtomicU64, Ordering},
@@ -20,12 +20,99 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungsten
 const TAB_INIT_JS: &str = "(function(){ return {\"title\": document.title, \"classes\": Array.from(document.documentElement.classList).concat(Array.from(document.body.classList)).concat(Array.from(document.head.classList))} })()";
 const MARKER_JS: &str = r#"
                     (function() {
-                        const elem = document.createElement('div');
-                        elem.id = "test_css_loaded";
-                        document.head.append(elem);
+                        if (!document.head) {
+                            return false;
+                        }
+                        if (!document.getElementById("test_css_loaded")) {
+                            const elem = document.createElement('div');
+                            elem.id = "test_css_loaded";
+                            document.head.append(elem);
+                        }
+                        return true;
                     })()
                     "#;
-const REMOVE_ALL_JS: &str = "\n        (function() {\n            document.querySelectorAll('.css-loader-style').forEach(x => x.remove());\n        })()\n        ";
+const WATCHER_JS: &str = r#"
+(() => {
+    if (window !== window.top || window.__cssLoaderWatcherInstalled) {
+        return true;
+    }
+    window.__cssLoaderWatcherInstalled = true;
+    const expected = window.__cssLoaderExpected instanceof Set
+        ? window.__cssLoaderExpected
+        : (window.__cssLoaderExpected = new Set());
+    let headObserver;
+    let observedHead;
+    let rootElement;
+    let checkScheduled = false;
+    let repairRequested = false;
+    const check = () => {
+        if (!document.head) {
+            return;
+        }
+        const missing = !document.getElementById("test_css_loaded")
+            || [...expected].some(id => !document.getElementById(id));
+        if (missing) {
+            if (!repairRequested) {
+                repairRequested = true;
+                if (typeof window.__cssLoaderWatch === "function") {
+                    window.__cssLoaderWatch("missing");
+                }
+            }
+        } else {
+            repairRequested = false;
+        }
+    };
+    const scheduleCheck = () => {
+        if (checkScheduled) {
+            return;
+        }
+        checkScheduled = true;
+        queueMicrotask(() => {
+            checkScheduled = false;
+            check();
+        });
+    };
+    const observeHead = () => {
+        if (observedHead === document.head) {
+            return;
+        }
+        headObserver?.disconnect();
+        observedHead = document.head;
+        if (observedHead) {
+            headObserver = new MutationObserver(scheduleCheck);
+            headObserver.observe(observedHead, {childList: true});
+        }
+    };
+    const rootObserver = new MutationObserver(() => {
+        observeHead();
+        scheduleCheck();
+    });
+    const observeDocument = () => {
+        if (rootElement !== document.documentElement) {
+            rootObserver.disconnect();
+            rootElement = document.documentElement;
+            if (rootElement) {
+                rootObserver.observe(rootElement, {childList: true});
+            }
+        }
+        observeHead();
+        scheduleCheck();
+    };
+    document.addEventListener("readystatechange", observeDocument);
+    document.addEventListener("DOMContentLoaded", observeDocument, {once: true});
+    observeDocument();
+    return true;
+})()
+"#;
+const REMOVE_ALL_JS: &str = r#"
+        (function() {
+            const expected = window.__cssLoaderExpected instanceof Set
+                ? window.__cssLoaderExpected
+                : (window.__cssLoaderExpected = new Set());
+            expected.clear();
+            document.querySelectorAll('.css-loader-style').forEach(x => x.remove());
+        })()
+        "#;
 
 #[derive(Clone, Debug)]
 struct Tab {
@@ -115,6 +202,7 @@ impl Cdp {
 pub struct Browser {
     tabs: Mutex<HashMap<String, Tab>>,
     connection: Mutex<Option<Arc<Cdp>>>,
+    repairs: Mutex<HashSet<String>>,
 }
 
 impl Browser {
@@ -204,25 +292,37 @@ impl Browser {
             let _ = writer_closed.send(true);
         });
         let reader_cdp = Arc::clone(&cdp);
-        let reader = tokio::spawn(async move {
-            while let Some(Ok(message)) = source.next().await {
-                if let Message::Text(text) = message {
-                    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-                        continue;
-                    };
-                    if let Some(id) = value.get("id").and_then(Value::as_u64) {
-                        if let Some(sender) = reader_cdp.pending.lock().await.remove(&id) {
-                            let _ = sender.send(value);
+        let reader =
+            tokio::spawn(async move {
+                while let Some(Ok(message)) = source.next().await {
+                    if let Message::Text(text) = message {
+                        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                            continue;
+                        };
+                        if let Some(id) = value.get("id").and_then(Value::as_u64) {
+                            if let Some(sender) = reader_cdp.pending.lock().await.remove(&id) {
+                                let _ = sender.send(value);
+                            }
+                        } else if value.get("method").and_then(Value::as_str).is_some_and(
+                            |method| {
+                                matches!(
+                                    method,
+                                    "Runtime.bindingCalled"
+                                        | "Target.targetCreated"
+                                        | "Target.attachedToTarget"
+                                        | "Target.detachedFromTarget"
+                                        | "Target.targetInfoChanged"
+                                )
+                            },
+                        ) {
+                            let _ = reader_cdp.events.send(value);
                         }
-                    } else {
-                        let _ = reader_cdp.events.send(value);
+                    } else if matches!(message, Message::Close(_)) {
+                        break;
                     }
-                } else if matches!(message, Message::Close(_)) {
-                    break;
                 }
-            }
-            let _ = closed_tx.send(true);
-        });
+                let _ = closed_tx.send(true);
+            });
 
         let mut event_rx = cdp.events.subscribe();
         let _ = cdp
@@ -236,7 +336,7 @@ impl Browser {
         self.attach_existing(&cdp).await;
         let mut closed_rx = cdp.closed.clone();
         let mut sanity = interval(Duration::from_secs(5));
-        let mut health = interval(Duration::from_secs(3));
+        let mut health = interval(Duration::from_secs(30));
         sanity.tick().await;
         health.tick().await;
         loop {
@@ -290,6 +390,21 @@ impl Browser {
             .and_then(Value::as_str)
             .unwrap_or_default()
         {
+            "Runtime.bindingCalled" => {
+                if event.pointer("/params/name").and_then(Value::as_str) == Some("__cssLoaderWatch")
+                    && let Some(session) = event.get("sessionId").and_then(Value::as_str)
+                {
+                    let id = self
+                        .tabs
+                        .lock()
+                        .await
+                        .iter()
+                        .find_map(|(id, tab)| (tab.session == session).then(|| id.clone()));
+                    if let Some(id) = id {
+                        self.repair_tab(&id, cdp, backend).await;
+                    }
+                }
+            }
             "Target.targetCreated" => {
                 if event
                     .pointer("/params/targetInfo/type")
@@ -441,7 +556,55 @@ impl Browser {
             tab.initialized = true;
             log::info!("Connected to tab: {}", tab.title);
         }
-        self.health_tab(id, cdp, backend).await;
+        let runtime_enabled = cdp
+            .command("Runtime.enable", json!({}), Some(session), true)
+            .await
+            .is_some_and(|response| response.get("error").is_none());
+        if !runtime_enabled {
+            log::warn!("Failed to enable the Runtime domain on tab {id}");
+            self.health_tab(id, cdp, backend).await;
+            return;
+        }
+        let page_enabled = cdp
+            .command("Page.enable", json!({}), Some(session), true)
+            .await
+            .is_some_and(|response| response.get("error").is_none());
+        if !page_enabled {
+            log::warn!("Failed to enable the Page domain on tab {id}");
+        }
+        let binding_added = cdp
+            .command(
+                "Runtime.addBinding",
+                json!({"name": "__cssLoaderWatch"}),
+                Some(session),
+                true,
+            )
+            .await
+            .is_some_and(|response| response.get("error").is_none());
+        if !binding_added {
+            log::warn!("Failed to install CSS repair binding on tab {id}");
+            self.health_tab(id, cdp, backend).await;
+            return;
+        }
+        let watcher_registered = if page_enabled {
+            cdp.command(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": WATCHER_JS}),
+                Some(session),
+                true,
+            )
+            .await
+            .is_some_and(|response| response.get("error").is_none())
+        } else {
+            false
+        };
+        if !watcher_registered {
+            log::warn!("Failed to register CSS repair watcher for future documents on tab {id}");
+        }
+        if evaluate(cdp, session, WATCHER_JS, true).await != Some(Value::Bool(true)) {
+            log::warn!("Failed to install CSS repair watcher in current document on tab {id}");
+            self.health_tab(id, cdp, backend).await;
+        }
     }
 
     async fn sanity_check(&self, cdp: &Arc<Cdp>, backend: Weak<Backend>) {
@@ -527,36 +690,36 @@ impl Browser {
         else {
             return;
         };
-        if !initialized {
-            return;
-        }
-        if evaluate(
-            cdp,
-            &session,
-            "document.getElementById('test_css_loaded') != null",
-            true,
-        )
-        .await
-            == Some(Value::Bool(true))
+        if !initialized
+            || dom_contains_selector(cdp, &session, "#test_css_loaded").await != Some(false)
         {
             return;
         }
-        let _ = evaluate(cdp, &session, MARKER_JS, true).await;
-        if evaluate(
-            cdp,
-            &session,
-            "document.getElementById('test_css_loaded') != null",
-            true,
-        )
-        .await
-            != Some(Value::Bool(true))
-        {
-            log::error!("a variable was injected but cannot be found when retrieved");
+        self.repair_tab(id, cdp, backend).await;
+    }
+
+    async fn repair_tab(&self, id: &str, cdp: &Arc<Cdp>, backend: Weak<Backend>) {
+        if !self.repairs.lock().await.insert(id.to_owned()) {
             return;
         }
-        if let Some(backend) = backend.upgrade() {
-            backend.force_reinject(id).await;
+        let session = self
+            .tabs
+            .lock()
+            .await
+            .get(id)
+            .filter(|tab| tab.initialized)
+            .map(|tab| tab.session.clone());
+        if let Some(session) = session {
+            if dom_contains_selector(cdp, &session, "#test_css_loaded").await != Some(true) {
+                let _ = evaluate(cdp, &session, MARKER_JS, true).await;
+            }
+            if dom_contains_selector(cdp, &session, "#test_css_loaded").await != Some(true) {
+                log::error!("a variable was injected but cannot be found when retrieved");
+            } else if let Some(backend) = backend.upgrade() {
+                backend.force_reinject(id).await;
+            }
         }
+        self.repairs.lock().await.remove(id);
     }
 
     pub async fn inject_css(&self, selector: &str, css: &str, id: &str) {
@@ -628,15 +791,15 @@ impl Browser {
             .collect::<Vec<_>>();
         let js_data = python_json_dump(&json!({"add": add, "remove": removes}));
         let extra = if remove_all_first {
-            "document.querySelectorAll('.css-loader-style').forEach(x => x.remove());"
+            "expected.clear(); document.querySelectorAll('.css-loader-style').forEach(x => x.remove());"
         } else {
             ""
         };
         let mut js = String::from("\n        (function() {\n            let css_data = ");
         js.push_str(&js_data);
-        js.push_str(";\n\n            ");
+        js.push_str(";\n\n            const expected = window.__cssLoaderExpected instanceof Set ? window.__cssLoaderExpected : (window.__cssLoaderExpected = new Set());\n\n            ");
         js.push_str(extra);
-        js.push_str("\n\n            css_data.add.forEach(x => {\n                if (document.getElementById(x.id) !== null){\n                    return;\n                }\n\n                let style = document.createElement('style');\n\t            style.id = x.id;\n                style.classList.add('css-loader-style');\n\t            document.head.append(style);\n\t            style.textContent = x.css;\n            });\n            \n            css_data.remove.forEach(x => {\n                let style = document.getElementById(x);\n                style?.parentNode.removeChild(style);\n            });\n        })()\n        ");
+        js.push_str("\n\n            css_data.add.forEach(x => {\n                expected.add(x.id);\n                if (document.getElementById(x.id) !== null){\n                    return;\n                }\n\n                let style = document.createElement('style');\n\t            style.id = x.id;\n                style.classList.add('css-loader-style');\n\t            document.head.append(style);\n\t            style.textContent = x.css;\n            });\n            \n            css_data.remove.forEach(x => {\n                expected.delete(x);\n                let style = document.getElementById(x);\n                style?.parentNode.removeChild(style);\n            });\n        })()\n        ");
         while retry > 0 {
             retry -= 1;
             let cdp = self.connection.lock().await.clone();
@@ -681,6 +844,22 @@ impl Browser {
             }
         }
     }
+}
+
+async fn dom_contains_selector(cdp: &Arc<Cdp>, session: &str, selector: &str) -> Option<bool> {
+    let document = cdp
+        .command("DOM.getDocument", json!({"depth": 0}), Some(session), true)
+        .await?;
+    let node_id = document.pointer("/result/root/nodeId")?.as_u64()?;
+    let response = cdp
+        .command(
+            "DOM.querySelector",
+            json!({"nodeId": node_id, "selector": selector}),
+            Some(session),
+            true,
+        )
+        .await?;
+    Some(response.pointer("/result/nodeId")?.as_u64()? != 0)
 }
 
 async fn evaluate(
