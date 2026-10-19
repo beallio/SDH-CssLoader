@@ -1106,12 +1106,7 @@ async fn inject_one(
             }
         }
     }
-    let class_mappings = core.class_mappings.clone();
-    let css = {
-        let inject = &mut core.injects[inject_id];
-        inject.load(&class_mappings)?;
-        inject.css.clone().unwrap_or_default()
-    };
+    let css = ensure_css(core, inject_id)?;
     let mut uuids = HashMap::new();
     for selector in selectors {
         let id = uuid::Uuid::new_v4().to_string();

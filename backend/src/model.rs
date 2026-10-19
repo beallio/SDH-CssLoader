@@ -5,8 +5,14 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::LazyLock,
     time::UNIX_EPOCH,
 };
+
+static CLASS_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\.[_a-zA-Z]+[_a-zA-Z0-9-]*)").unwrap());
+static CLASS_ATTR_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(\[class[*^|~]=\"[_a-zA-Z0-9-]*\"\])"#).unwrap());
 
 pub const CSS_LOADER_VER: u64 = 9;
 pub const FLAG_KEEP_DEPENDENCIES: &str = "KEEP_DEPENDENCIES";
@@ -40,8 +46,7 @@ impl Inject {
             return Ok(());
         }
         let source = fs::read_to_string(&self.path).map_err(|e| e.to_string())?;
-        let class_pattern = Regex::new(r"(\.[_a-zA-Z]+[_a-zA-Z0-9-]*)").unwrap();
-        let mut css = class_pattern
+        let mut css = CLASS_PATTERN
             .replace_all(&source, |captures: &regex::Captures<'_>| {
                 let token = &captures[0][1..];
                 mappings
@@ -51,8 +56,7 @@ impl Inject {
             })
             .into_owned();
         css = css.replace('\\', "\\\\").replace('`', "\\`");
-        let attr_pattern = Regex::new(r#"(\[class[*^|~]=\"[_a-zA-Z0-9-]*\"\])"#).unwrap();
-        css = attr_pattern
+        css = CLASS_ATTR_PATTERN
             .replace_all(&css, |captures: &regex::Captures<'_>| {
                 let matched = &captures[0];
                 let token = &matched[9..matched.len() - 2];

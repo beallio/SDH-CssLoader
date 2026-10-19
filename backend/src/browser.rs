@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{
         Arc, LazyLock, Weak,
         atomic::{AtomicU64, Ordering},
@@ -46,17 +46,20 @@ impl Tab {
         } else if let Some(class) = selector.strip_prefix('!') {
             self.classes.iter().any(|x| x == class)
         } else {
-            match fancy_regex::Regex::new(&format!("^({selector})")) {
-                Ok(pattern) => pattern.is_match(&self.title).unwrap_or(false),
-                Err(error) => {
-                    static WARNED: LazyLock<std::sync::Mutex<HashSet<String>>> =
-                        LazyLock::new(Default::default);
-                    if WARNED.lock().unwrap().insert(selector.to_owned()) {
-                        log::warn!("Invalid title selector '{selector}': {error}");
-                    }
-                    false
-                }
+            // Python's re caches compiled patterns; compile each selector once, not per comparison.
+            static PATTERNS: LazyLock<
+                std::sync::Mutex<HashMap<String, Option<fancy_regex::Regex>>>,
+            > = LazyLock::new(Default::default);
+            let mut patterns = PATTERNS.lock().unwrap();
+            if !patterns.contains_key(selector) {
+                let pattern = fancy_regex::Regex::new(&format!("^({selector})"))
+                    .inspect_err(|error| log::warn!("Invalid title selector '{selector}': {error}"))
+                    .ok();
+                patterns.insert(selector.to_owned(), pattern);
             }
+            patterns[selector]
+                .as_ref()
+                .is_some_and(|pattern| pattern.is_match(&self.title).unwrap_or(false))
         }
     }
 }
