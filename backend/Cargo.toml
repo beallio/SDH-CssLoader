@@ -33,3 +33,5 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 strip = true
+lto = true
+codegen-units = 1
