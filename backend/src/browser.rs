@@ -112,7 +112,6 @@ const PREPAINT_JS: &str = r#"
             marker.id = "test_css_loaded";
             head.append(marker);
         }
-        const elements = [];
         for (const {id, css} of styles) {
             expected.add(id);
             let style = document.getElementById(id);
@@ -122,15 +121,19 @@ const PREPAINT_JS: &str = r#"
                 style.classList.add("css-loader-style");
                 style.textContent = css;
             }
-            elements.push(style);
             head.append(style);
         }
+        // Move what is in the document now: a reset or theme change during loading may have replaced the prepaint styles.
         const moveToEnd = () => {
-            if (!document.head) {
+            const head = document.head;
+            if (!head) {
                 return;
             }
-            document.head.append(marker);
-            elements.forEach(style => document.head.append(style));
+            const current = document.getElementById("test_css_loaded");
+            if (current) {
+                head.append(current);
+            }
+            document.querySelectorAll(".css-loader-style").forEach(style => head.append(style));
         };
         if (document.readyState === "loading") {
             document.addEventListener("DOMContentLoaded", moveToEnd, {once: true});
@@ -262,6 +265,8 @@ pub struct Browser {
     connection: Mutex<Option<Arc<Cdp>>>,
     repairs: Mutex<HashSet<String>>,
     pending_target_info: Mutex<HashMap<String, (String, String)>>,
+    // Overlapping replace calls leaked a stale prepaint script that resurrected removed styles on reload.
+    preload_updates: Mutex<()>,
 }
 
 impl Browser {
@@ -656,9 +661,7 @@ impl Browser {
         if !binding_added {
             log::warn!("Failed to install CSS repair binding on tab {id}");
         }
-        let empty_styles = IndexMap::new();
-        let source = preload_script(&empty_styles);
-        self.update_preload_script(id, cdp, session, source).await;
+        self.update_preload_script(id, cdp, session).await;
         self.initialize_tab(id, cdp, backend).await;
     }
 
@@ -724,13 +727,17 @@ impl Browser {
         }
     }
 
-    async fn update_preload_script(&self, id: &str, cdp: &Arc<Cdp>, session: &str, source: String) {
-        let old_id = self
-            .tabs
-            .lock()
-            .await
-            .get(id)
-            .and_then(|tab| tab.preload_script_id.clone());
+    /// Registers the tab's current applied styles for future documents, replacing the previous script.
+    async fn update_preload_script(&self, id: &str, cdp: &Arc<Cdp>, session: &str) {
+        let _serial = self.preload_updates.lock().await;
+        let Some((old_id, source)) = self.tabs.lock().await.get(id).map(|tab| {
+            (
+                tab.preload_script_id.clone(),
+                preload_script(&tab.applied_styles),
+            )
+        }) else {
+            return;
+        };
         if let Some(old_id) = old_id
             && !cdp
                 .command(
@@ -964,7 +971,7 @@ impl Browser {
             if let Some(cdp) = cdp
                 && evaluate(&cdp, &session, &js, true).await.is_some()
             {
-                let source = {
+                let styles_changed = {
                     let mut tabs = self.tabs.lock().await;
                     let Some(tab) = tabs.get_mut(id) else {
                         return Value::String("Undefined".into());
@@ -982,10 +989,10 @@ impl Browser {
                     for style_id in &removes {
                         changed |= tab.applied_styles.shift_remove(style_id).is_some();
                     }
-                    changed.then(|| preload_script(&tab.applied_styles))
+                    changed
                 };
-                if let Some(source) = source {
-                    self.update_preload_script(id, &cdp, &session, source).await;
+                if styles_changed {
+                    self.update_preload_script(id, &cdp, &session).await;
                 }
                 return Value::String("Undefined".into());
             }
@@ -1018,21 +1025,17 @@ impl Browser {
                         .await
                         .is_some()
                 {
-                    let source = {
+                    let styles_changed = {
                         let mut tabs = self.tabs.lock().await;
                         let Some(tab) = tabs.get_mut(&id) else {
                             break;
                         };
-                        if tab.applied_styles.is_empty() {
-                            None
-                        } else {
-                            tab.applied_styles.clear();
-                            Some(preload_script(&tab.applied_styles))
-                        }
+                        let changed = !tab.applied_styles.is_empty();
+                        tab.applied_styles.clear();
+                        changed
                     };
-                    if let Some(source) = source {
-                        self.update_preload_script(&id, &cdp, &session, source)
-                            .await;
+                    if styles_changed {
+                        self.update_preload_script(&id, &cdp, &session).await;
                     }
                     break;
                 }
