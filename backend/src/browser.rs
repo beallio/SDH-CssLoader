@@ -97,6 +97,8 @@ const PREPAINT_JS: &str = r#"
         return;
     }
     const styles = $STYLES;
+    const css = styles.css;
+    const hasStyles = styles.has_styles;
     const install = () => {
         const head = document.head;
         if (!head) {
@@ -112,25 +114,30 @@ const PREPAINT_JS: &str = r#"
             marker.id = "test_css_loaded";
             head.append(marker);
         }
-        const elements = [];
-        for (const {id, css} of styles) {
-            expected.add(id);
-            let style = document.getElementById(id);
-            if (!style) {
-                style = document.createElement("style");
-                style.id = id;
-                style.classList.add("css-loader-style");
-                style.textContent = css;
+        let sheet = document.getElementById("css-loader-sheet");
+        if (hasStyles) {
+            expected.add("css-loader-sheet");
+            if (!sheet) {
+                sheet = document.createElement("style");
+                sheet.id = "css-loader-sheet";
+                sheet.classList.add("css-loader-style");
             }
-            elements.push(style);
-            head.append(style);
+            if (sheet.textContent !== css) {
+                sheet.textContent = css;
+            }
+            head.append(sheet);
+        } else if (sheet) {
+            sheet.remove();
         }
         const moveToEnd = () => {
-            if (!document.head) {
+            const currentHead = document.head;
+            if (!currentHead) {
                 return;
             }
-            document.head.append(marker);
-            elements.forEach(style => document.head.append(style));
+            currentHead.append(marker);
+            if (hasStyles) {
+                currentHead.append(sheet);
+            }
         };
         if (document.readyState === "loading") {
             document.addEventListener("DOMContentLoaded", moveToEnd, {once: true});
@@ -158,14 +165,28 @@ const REMOVE_ALL_JS: &str = r#"
             document.querySelectorAll('.css-loader-style').forEach(x => x.remove());
         })()
         "#;
+fn styles_text(styles: &IndexMap<String, String>) -> String {
+    let capacity = styles.values().map(String::len).sum::<usize>() + styles.len().saturating_sub(1);
+    let mut text = String::with_capacity(capacity);
+    for (index, css) in styles.values().enumerate() {
+        if index > 0 {
+            text.push('\n');
+        }
+        text.push_str(css);
+    }
+    text
+}
+
 fn preload_script(styles: &IndexMap<String, String>) -> String {
-    let styles = styles
-        .iter()
-        .map(|(id, css)| json!({"id": id, "css": css}))
-        .collect::<Vec<_>>();
+    let css = styles_text(styles);
+    preload_script_with_css(&css, !styles.is_empty())
+}
+
+fn preload_script_with_css(css: &str, has_styles: bool) -> String {
+    let styles = json!({"css": css, "has_styles": has_styles});
     format!(
         "{};\n{}",
-        PREPAINT_JS.replace("$STYLES", &python_json_dump(&json!(styles))),
+        PREPAINT_JS.replace("$STYLES", &python_json_dump(&styles)),
         WATCHER_JS
     )
 }
@@ -179,6 +200,7 @@ struct Tab {
     classes: Vec<String>,
     initialized: bool,
     applied_styles: IndexMap<String, String>,
+    commit_lock: Arc<Mutex<()>>,
     preload_script_id: Option<String>,
     pending_add: IndexMap<String, String>,
     pending_remove: Vec<String>,
@@ -599,6 +621,7 @@ impl Browser {
             classes: Vec::new(),
             initialized: false,
             applied_styles: IndexMap::new(),
+            commit_lock: Arc::new(Mutex::new(())),
             preload_script_id: None,
             pending_add: IndexMap::new(),
             pending_remove: Vec::new(),
@@ -902,7 +925,17 @@ impl Browser {
     }
 
     async fn commit_tab(&self, id: &str, mut retry: usize, remove_all_first: bool) -> Value {
-        let (session, adds, removes, title) = {
+        let Some(commit_lock) = self
+            .tabs
+            .lock()
+            .await
+            .get(id)
+            .map(|tab| Arc::clone(&tab.commit_lock))
+        else {
+            return json!({"success": true, "message": "Success"});
+        };
+        let _commit = commit_lock.lock().await;
+        let (session, adds, removes, title, next_styles, styles_changed) = {
             let mut tabs = self.tabs.lock().await;
             let Some(tab) = tabs.get_mut(id) else {
                 return json!({"success": true, "message": "Success"});
@@ -912,7 +945,29 @@ impl Browser {
             }
             let adds = std::mem::take(&mut tab.pending_add);
             let removes = std::mem::take(&mut tab.pending_remove);
-            (tab.session.clone(), adds, removes, tab.title.clone())
+            let mut styles = if remove_all_first {
+                IndexMap::new()
+            } else {
+                tab.applied_styles.clone()
+            };
+            let mut changed = remove_all_first && !tab.applied_styles.is_empty();
+            for (style_id, css) in &adds {
+                if !styles.contains_key(style_id) {
+                    styles.insert(style_id.clone(), css.clone());
+                    changed = true;
+                }
+            }
+            for style_id in &removes {
+                changed |= styles.shift_remove(style_id).is_some();
+            }
+            (
+                tab.session.clone(),
+                adds,
+                removes,
+                tab.title.clone(),
+                styles,
+                changed,
+            )
         };
         log::info!(
             "Committing css transaction on {} +{} -{}",
@@ -920,46 +975,34 @@ impl Browser {
             adds.len(),
             removes.len()
         );
-        let add = adds
-            .iter()
-            .map(|(id, css)| json!({"id": id, "css": css}))
-            .collect::<Vec<_>>();
-        let js_data = python_json_dump(&json!({"add": add, "remove": &removes}));
+        let next_css = styles_text(&next_styles);
+        let has_styles = !next_styles.is_empty();
+        let js_data = python_json_dump(&json!({"css": &next_css, "has_styles": has_styles}));
         let extra = if remove_all_first {
-            "expected.clear(); document.querySelectorAll('.css-loader-style').forEach(x => x.remove());"
+            "document.querySelectorAll('.css-loader-style').forEach(x => { if (x.id !== 'css-loader-sheet') x.remove(); });"
         } else {
             ""
         };
-        let mut js = String::from("\n        (function() {\n            let css_data = ");
+        let mut js = String::from("(function() { const css_data = ");
         js.push_str(&js_data);
-        js.push_str(";\n\n            const expected = window.__cssLoaderExpected instanceof Set ? window.__cssLoaderExpected : (window.__cssLoaderExpected = new Set());\n\n            ");
+        js.push_str("; const head = document.head; if (!head) return false; const expected = window.__cssLoaderExpected instanceof Set ? window.__cssLoaderExpected : (window.__cssLoaderExpected = new Set()); expected.clear(); ");
         js.push_str(extra);
-        js.push_str("\n\n            if (document.head && !document.getElementById('test_css_loaded')) {\n                const marker = document.createElement('div');\n                marker.id = 'test_css_loaded';\n                document.head.append(marker);\n            }\n\n            css_data.add.forEach(x => {\n                expected.add(x.id);\n                if (document.getElementById(x.id) !== null){\n                    return;\n                }\n\n                let style = document.createElement('style');\n\t            style.id = x.id;\n                style.classList.add('css-loader-style');\n\t            document.head.append(style);\n\t            style.textContent = x.css;\n            });\n            \n            css_data.remove.forEach(x => {\n                expected.delete(x);\n                let style = document.getElementById(x);\n                style?.parentNode.removeChild(style);\n            });\n        })()\n        ");
+        js.push_str(" if (!document.getElementById('test_css_loaded')) { const marker = document.createElement('div'); marker.id = 'test_css_loaded'; head.append(marker); } if (css_data.has_styles) expected.add('css-loader-sheet'); let sheet = document.getElementById('css-loader-sheet'); if (css_data.has_styles) { if (!sheet) { sheet = document.createElement('style'); sheet.id = 'css-loader-sheet'; sheet.classList.add('css-loader-style'); } if (sheet.textContent !== css_data.css) sheet.textContent = css_data.css; if (sheet.parentNode !== head || sheet !== head.lastChild) head.append(sheet); } else { sheet?.remove(); } return true; })()");
         while retry > 0 {
             retry -= 1;
             let cdp = self.connection.lock().await.clone();
             if let Some(cdp) = cdp
-                && evaluate(&cdp, &session, &js, true).await.is_some()
+                && evaluate(&cdp, &session, &js, true).await == Some(Value::Bool(true))
             {
-                let source = {
+                let source = if styles_changed {
                     let mut tabs = self.tabs.lock().await;
                     let Some(tab) = tabs.get_mut(id) else {
                         return Value::String("Undefined".into());
                     };
-                    let mut changed = remove_all_first && !tab.applied_styles.is_empty();
-                    if remove_all_first {
-                        tab.applied_styles.clear();
-                    }
-                    for (style_id, css) in &adds {
-                        if !tab.applied_styles.contains_key(style_id) {
-                            tab.applied_styles.insert(style_id.clone(), css.clone());
-                            changed = true;
-                        }
-                    }
-                    for style_id in &removes {
-                        changed |= tab.applied_styles.shift_remove(style_id).is_some();
-                    }
-                    changed.then(|| preload_script(&tab.applied_styles))
+                    tab.applied_styles = next_styles;
+                    Some(preload_script_with_css(&next_css, has_styles))
+                } else {
+                    None
                 };
                 if let Some(source) = source {
                     self.update_preload_script(id, &cdp, &session, source).await;
@@ -984,9 +1027,16 @@ impl Browser {
                 .collect()
         };
         for id in ids {
-            let Some(session) = self.tabs.lock().await.get(&id).map(|x| x.session.clone()) else {
+            let Some((session, commit_lock)) = self
+                .tabs
+                .lock()
+                .await
+                .get(&id)
+                .map(|tab| (tab.session.clone(), Arc::clone(&tab.commit_lock)))
+            else {
                 continue;
             };
+            let _commit = commit_lock.lock().await;
             let mut retry = 3;
             while retry > 0 {
                 retry -= 1;
@@ -1055,5 +1105,20 @@ async fn evaluate(
         }
     } else {
         None
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{IndexMap, styles_text};
+
+    #[test]
+    fn styles_text_keeps_order_and_separates_empty_blocks() {
+        let mut styles = IndexMap::new();
+        styles.insert("first".to_owned(), "a{}".to_owned());
+        styles.insert("empty".to_owned(), String::new());
+        styles.insert("last".to_owned(), "b{}".to_owned());
+
+        assert_eq!(styles_text(&styles), "a{}\n\nb{}");
+        assert_eq!(styles_text(&IndexMap::new()), "");
     }
 }
