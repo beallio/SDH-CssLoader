@@ -17,20 +17,7 @@ use tokio::{
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-const TAB_INIT_JS: &str = "(function(){ return {\"title\": document.title, \"classes\": Array.from(document.documentElement.classList).concat(Array.from(document.body.classList)).concat(Array.from(document.head.classList))} })()";
-const MARKER_JS: &str = r#"
-                    (function() {
-                        if (!document.head) {
-                            return false;
-                        }
-                        if (!document.getElementById("test_css_loaded")) {
-                            const elem = document.createElement('div');
-                            elem.id = "test_css_loaded";
-                            document.head.append(elem);
-                        }
-                        return true;
-                    })()
-                    "#;
+const TAB_INIT_JS: &str = "(function(){ return {\"title\": document.title, \"url\": location.href, \"readyState\": document.readyState, \"classes\": Array.from(document.documentElement.classList).concat(Array.from(document.body.classList)).concat(Array.from(document.head.classList))} })()";
 const WATCHER_JS: &str = r#"
 (() => {
     if (window !== window.top || window.__cssLoaderWatcherInstalled) {
@@ -104,6 +91,64 @@ const WATCHER_JS: &str = r#"
     return true;
 })()
 "#;
+const PREPAINT_JS: &str = r#"
+(() => {
+    if (window !== window.top) {
+        return;
+    }
+    const styles = $STYLES;
+    const install = () => {
+        const head = document.head;
+        if (!head) {
+            return false;
+        }
+        const expected = window.__cssLoaderExpected instanceof Set
+            ? window.__cssLoaderExpected
+            : (window.__cssLoaderExpected = new Set());
+        expected.clear();
+        let marker = document.getElementById("test_css_loaded");
+        if (!marker) {
+            marker = document.createElement("div");
+            marker.id = "test_css_loaded";
+            head.append(marker);
+        }
+        const elements = [];
+        for (const {id, css} of styles) {
+            expected.add(id);
+            let style = document.getElementById(id);
+            if (!style) {
+                style = document.createElement("style");
+                style.id = id;
+                style.classList.add("css-loader-style");
+                style.textContent = css;
+            }
+            elements.push(style);
+            head.append(style);
+        }
+        const moveToEnd = () => {
+            if (!document.head) {
+                return;
+            }
+            document.head.append(marker);
+            elements.forEach(style => document.head.append(style));
+        };
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", moveToEnd, {once: true});
+        } else {
+            moveToEnd();
+        }
+        return true;
+    };
+    if (!install()) {
+        const observer = new MutationObserver(() => {
+            if (install()) {
+                observer.disconnect();
+            }
+        });
+        observer.observe(document, {childList: true, subtree: true});
+    }
+})()
+"#;
 const REMOVE_ALL_JS: &str = r#"
         (function() {
             const expected = window.__cssLoaderExpected instanceof Set
@@ -113,6 +158,17 @@ const REMOVE_ALL_JS: &str = r#"
             document.querySelectorAll('.css-loader-style').forEach(x => x.remove());
         })()
         "#;
+fn preload_script(styles: &IndexMap<String, String>) -> String {
+    let styles = styles
+        .iter()
+        .map(|(id, css)| json!({"id": id, "css": css}))
+        .collect::<Vec<_>>();
+    format!(
+        "{};\n{}",
+        PREPAINT_JS.replace("$STYLES", &python_json_dump(&json!(styles))),
+        WATCHER_JS
+    )
+}
 
 #[derive(Clone, Debug)]
 struct Tab {
@@ -122,6 +178,8 @@ struct Tab {
     url: String,
     classes: Vec<String>,
     initialized: bool,
+    applied_styles: IndexMap<String, String>,
+    preload_script_id: Option<String>,
     pending_add: IndexMap<String, String>,
     pending_remove: Vec<String>,
 }
@@ -203,6 +261,7 @@ pub struct Browser {
     tabs: Mutex<HashMap<String, Tab>>,
     connection: Mutex<Option<Arc<Cdp>>>,
     repairs: Mutex<HashSet<String>>,
+    pending_target_info: Mutex<HashMap<String, (String, String)>>,
 }
 
 impl Browser {
@@ -308,6 +367,8 @@ impl Browser {
                                 matches!(
                                     method,
                                     "Runtime.bindingCalled"
+                                        | "Runtime.executionContextCreated"
+                                        | "Page.domContentEventFired"
                                         | "Target.targetCreated"
                                         | "Target.attachedToTarget"
                                         | "Target.detachedFromTarget"
@@ -352,6 +413,7 @@ impl Browser {
             }
         }
         self.tabs.lock().await.clear();
+        self.pending_target_info.lock().await.clear();
         *self.connection.lock().await = None;
         writer.abort();
         reader.abort();
@@ -401,7 +463,7 @@ impl Browser {
                         .iter()
                         .find_map(|(id, tab)| (tab.session == session).then(|| id.clone()));
                     if let Some(id) = id {
-                        self.repair_tab(&id, cdp, backend).await;
+                        self.repair_tab(&id, backend).await;
                     }
                 }
             }
@@ -410,35 +472,18 @@ impl Browser {
                     .pointer("/params/targetInfo/type")
                     .and_then(Value::as_str)
                     == Some("page")
-                {
-                    let id = event
+                    && let Some(id) = event
                         .pointer("/params/targetInfo/targetId")
                         .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    if let Some(response) = cdp
-                        .command("Target.getTargets", json!({}), None, true)
-                        .await
-                    {
-                        let exists = response
-                            .pointer("/result/targetInfos")
-                            .and_then(Value::as_array)
-                            .is_some_and(|xs| {
-                                xs.iter().any(|x| {
-                                    x.get("targetId").and_then(Value::as_str) == Some(id)
-                                        && x.get("type").and_then(Value::as_str) == Some("page")
-                                })
-                            });
-                        if exists {
-                            let _ = cdp
-                                .command(
-                                    "Target.attachToTarget",
-                                    json!({"targetId": id, "flatten": true}),
-                                    None,
-                                    false,
-                                )
-                                .await;
-                        }
-                    }
+                {
+                    let _ = cdp
+                        .command(
+                            "Target.attachToTarget",
+                            json!({"targetId": id, "flatten": true}),
+                            None,
+                            false,
+                        )
+                        .await;
                 }
             }
             "Target.attachedToTarget" => {
@@ -450,44 +495,71 @@ impl Browser {
                 .await
             }
             "Target.detachedFromTarget" => {
-                if let Some(id) = event.pointer("/params/targetId").and_then(Value::as_str)
-                    && let Some(tab) = self.tabs.lock().await.remove(id)
-                {
-                    log::info!("Disconnected from tab: {}", tab.title);
+                if let Some(id) = event.pointer("/params/targetId").and_then(Value::as_str) {
+                    self.pending_target_info.lock().await.remove(id);
+                    if let Some(tab) = self.tabs.lock().await.remove(id) {
+                        log::info!("Disconnected from tab: {}", tab.title);
+                    }
                 }
             }
             "Target.targetInfoChanged" => {
-                if let Some(info) = event.pointer("/params/targetInfo") {
-                    let Some(id) = info.get("targetId").and_then(Value::as_str) else {
-                        return;
-                    };
-                    let changed = {
+                if let Some(info) = event.pointer("/params/targetInfo")
+                    && info.get("type").and_then(Value::as_str) == Some("page")
+                    && let Some(id) = info.get("targetId").and_then(Value::as_str)
+                {
+                    let title = info
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let url = info
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let state = {
                         let mut tabs = self.tabs.lock().await;
-                        if let Some(tab) = tabs.get_mut(id) {
-                            let changed = tab.title
-                                != info
-                                    .get("title")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                || tab.url
-                                    != info.get("url").and_then(Value::as_str).unwrap_or_default();
-                            tab.title = info
-                                .get("title")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned();
-                            tab.url = info
-                                .get("url")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned();
-                            changed
-                        } else {
-                            false
-                        }
+                        tabs.get_mut(id).map(|tab| {
+                            let url_changed = tab.url != url;
+                            let changed = tab.title != title || url_changed;
+                            tab.title.clone_from(&title);
+                            tab.url.clone_from(&url);
+                            if url_changed {
+                                tab.initialized = false;
+                            }
+                            (changed, url_changed, tab.initialized)
+                        })
                     };
-                    if changed && let Some(backend) = backend.upgrade() {
-                        backend.force_reinject(id).await;
+                    if let Some((changed, url_changed, initialized)) = state {
+                        if url_changed || !initialized {
+                            self.initialize_tab(id, cdp, backend.clone()).await;
+                        } else if changed && let Some(backend) = backend.upgrade() {
+                            backend.force_reinject(id).await;
+                        }
+                    } else {
+                        self.pending_target_info
+                            .lock()
+                            .await
+                            .insert(id.to_owned(), (title, url));
+                    }
+                }
+            }
+            "Runtime.executionContextCreated" | "Page.domContentEventFired" => {
+                if event.get("method").and_then(Value::as_str)
+                    == Some("Runtime.executionContextCreated")
+                    && event
+                        .pointer("/params/context/auxData/isDefault")
+                        .and_then(Value::as_bool)
+                        == Some(false)
+                {
+                    return;
+                }
+                if let Some(session) = event.get("sessionId").and_then(Value::as_str) {
+                    let id = self.tabs.lock().await.iter().find_map(|(id, tab)| {
+                        (tab.session == session && !tab.initialized).then(|| id.clone())
+                    });
+                    if let Some(id) = id {
+                        self.initialize_tab(&id, cdp, backend).await;
                     }
                 }
             }
@@ -508,61 +580,38 @@ impl Browser {
         if self.tabs.lock().await.contains_key(id) {
             return;
         }
+        let latest = self.pending_target_info.lock().await.remove(id);
         let tab = Tab {
             id: id.to_owned(),
             session: session.to_owned(),
-            title: info
-                .get("title")
-                .and_then(Value::as_str)
+            title: latest
+                .as_ref()
+                .map(|info| info.0.as_str())
+                .or_else(|| info.get("title").and_then(Value::as_str))
                 .unwrap_or_default()
                 .to_owned(),
-            url: info
-                .get("url")
-                .and_then(Value::as_str)
+            url: latest
+                .as_ref()
+                .map(|info| info.1.as_str())
+                .or_else(|| info.get("url").and_then(Value::as_str))
                 .unwrap_or_default()
                 .to_owned(),
             classes: Vec::new(),
             initialized: false,
+            applied_styles: IndexMap::new(),
+            preload_script_id: None,
             pending_add: IndexMap::new(),
             pending_remove: Vec::new(),
         };
         self.tabs.lock().await.insert(id.to_owned(), tab);
-        let evaluated = evaluate(cdp, session, TAB_INIT_JS, true).await;
-        let Some(value) = evaluated.and_then(|x| x.as_object().cloned()) else {
-            log::warn!("Failed to connect to tab with id {id}");
-            self.tabs.lock().await.remove(id);
-            return;
-        };
-        {
-            let mut tabs = self.tabs.lock().await;
-            let Some(tab) = tabs.get_mut(id) else {
-                return;
-            };
-            tab.title = value
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or(&tab.title)
-                .to_owned();
-            tab.classes = value
-                .get("classes")
-                .and_then(Value::as_array)
-                .map(|x| {
-                    x.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
-            tab.initialized = true;
-            log::info!("Connected to tab: {}", tab.title);
-        }
+
         let runtime_enabled = cdp
             .command("Runtime.enable", json!({}), Some(session), true)
             .await
             .is_some_and(|response| response.get("error").is_none());
         if !runtime_enabled {
             log::warn!("Failed to enable the Runtime domain on tab {id}");
-            self.health_tab(id, cdp, backend).await;
+            self.tabs.lock().await.remove(id);
             return;
         }
         let page_enabled = cdp
@@ -583,27 +632,115 @@ impl Browser {
             .is_some_and(|response| response.get("error").is_none());
         if !binding_added {
             log::warn!("Failed to install CSS repair binding on tab {id}");
-            self.health_tab(id, cdp, backend).await;
+        }
+        let empty_styles = IndexMap::new();
+        let source = preload_script(&empty_styles);
+        self.update_preload_script(id, cdp, session, source).await;
+        self.initialize_tab(id, cdp, backend).await;
+    }
+
+    async fn initialize_tab(&self, id: &str, cdp: &Arc<Cdp>, backend: Weak<Backend>) {
+        let Some((session, initialized, target_url)) = self
+            .tabs
+            .lock()
+            .await
+            .get(id)
+            .map(|tab| (tab.session.clone(), tab.initialized, tab.url.clone()))
+        else {
+            return;
+        };
+        if initialized {
             return;
         }
-        let watcher_registered = if page_enabled {
-            cdp.command(
+        let Some(value) = evaluate(cdp, &session, TAB_INIT_JS, true)
+            .await
+            .and_then(|value| value.as_object().cloned())
+        else {
+            return;
+        };
+        if !target_url.is_empty()
+            && value.get("url").and_then(Value::as_str) != Some(target_url.as_str())
+        {
+            return;
+        }
+        if value.get("readyState").and_then(Value::as_str) == Some("loading") {
+            return;
+        }
+        let (title, source) = {
+            let mut tabs = self.tabs.lock().await;
+            let Some(tab) = tabs.get_mut(id) else {
+                return;
+            };
+            if let Some(title) = value
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|title| !title.is_empty())
+            {
+                tab.title = title.to_owned();
+            }
+            tab.classes = value
+                .get("classes")
+                .and_then(Value::as_array)
+                .map(|classes| {
+                    classes
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            tab.initialized = true;
+            (tab.title.clone(), preload_script(&tab.applied_styles))
+        };
+        if evaluate(cdp, &session, &source, true).await != Some(Value::Bool(true)) {
+            log::warn!("Failed to install CSS repair watcher in current document on tab {id}");
+        }
+        log::info!("Connected to tab: {title}");
+        if let Some(backend) = backend.upgrade() {
+            backend.force_reinject(id).await;
+        }
+    }
+
+    async fn update_preload_script(&self, id: &str, cdp: &Arc<Cdp>, session: &str, source: String) {
+        let old_id = self
+            .tabs
+            .lock()
+            .await
+            .get(id)
+            .and_then(|tab| tab.preload_script_id.clone());
+        if let Some(old_id) = old_id
+            && !cdp
+                .command(
+                    "Page.removeScriptToEvaluateOnNewDocument",
+                    json!({"identifier": old_id}),
+                    Some(session),
+                    true,
+                )
+                .await
+                .is_some_and(|response| response.get("error").is_none())
+        {
+            log::warn!("Failed to replace CSS prepaint script on tab {id}");
+        }
+        let script_id = cdp
+            .command(
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({"source": WATCHER_JS}),
+                json!({"source": source}),
                 Some(session),
                 true,
             )
             .await
-            .is_some_and(|response| response.get("error").is_none())
-        } else {
-            false
-        };
-        if !watcher_registered {
-            log::warn!("Failed to register CSS repair watcher for future documents on tab {id}");
+            .filter(|response| response.get("error").is_none())
+            .and_then(|response| {
+                response
+                    .pointer("/result/identifier")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            });
+        if script_id.is_none() {
+            log::warn!("Failed to register CSS prepaint script for future documents on tab {id}");
         }
-        if evaluate(cdp, session, WATCHER_JS, true).await != Some(Value::Bool(true)) {
-            log::warn!("Failed to install CSS repair watcher in current document on tab {id}");
-            self.health_tab(id, cdp, backend).await;
+        if let Some(tab) = self.tabs.lock().await.get_mut(id) {
+            tab.preload_script_id = script_id;
         }
     }
 
@@ -639,10 +776,9 @@ impl Browser {
             let Some(id) = target.get("targetId").and_then(Value::as_str) else {
                 continue;
             };
-            let mut changed = false;
-            {
+            let state = {
                 let mut tabs = self.tabs.lock().await;
-                if let Some(tab) = tabs.get_mut(id) {
+                tabs.get_mut(id).map(|tab| {
                     let title = target
                         .get("title")
                         .and_then(Value::as_str)
@@ -651,24 +787,30 @@ impl Browser {
                         .get("url")
                         .and_then(Value::as_str)
                         .unwrap_or_default();
-                    changed = tab.title != title || tab.url != url;
+                    let changed = tab.title != title || tab.url != url;
                     tab.title = title.to_owned();
                     tab.url = url.to_owned();
+                    (tab.initialized, changed)
+                })
+            };
+            match state {
+                Some((false, _)) => self.initialize_tab(id, cdp, backend.clone()).await,
+                Some((true, true)) => {
+                    if let Some(backend) = backend.upgrade() {
+                        backend.force_reinject(id).await;
+                    }
                 }
-            }
-            if changed {
-                if let Some(backend) = backend.upgrade() {
-                    backend.force_reinject(id).await;
+                Some((true, false)) => {}
+                None => {
+                    let _ = cdp
+                        .command(
+                            "Target.attachToTarget",
+                            json!({"targetId": id, "flatten": true}),
+                            None,
+                            false,
+                        )
+                        .await;
                 }
-            } else if !self.tabs.lock().await.contains_key(id) {
-                let _ = cdp
-                    .command(
-                        "Target.attachToTarget",
-                        json!({"targetId": id, "flatten": true}),
-                        None,
-                        false,
-                    )
-                    .await;
             }
         }
     }
@@ -695,29 +837,22 @@ impl Browser {
         {
             return;
         }
-        self.repair_tab(id, cdp, backend).await;
+        self.repair_tab(id, backend).await;
     }
 
-    async fn repair_tab(&self, id: &str, cdp: &Arc<Cdp>, backend: Weak<Backend>) {
+    async fn repair_tab(&self, id: &str, backend: Weak<Backend>) {
         if !self.repairs.lock().await.insert(id.to_owned()) {
             return;
         }
-        let session = self
+        if self
             .tabs
             .lock()
             .await
             .get(id)
-            .filter(|tab| tab.initialized)
-            .map(|tab| tab.session.clone());
-        if let Some(session) = session {
-            if dom_contains_selector(cdp, &session, "#test_css_loaded").await != Some(true) {
-                let _ = evaluate(cdp, &session, MARKER_JS, true).await;
-            }
-            if dom_contains_selector(cdp, &session, "#test_css_loaded").await != Some(true) {
-                log::error!("a variable was injected but cannot be found when retrieved");
-            } else if let Some(backend) = backend.upgrade() {
-                backend.force_reinject(id).await;
-            }
+            .is_some_and(|tab| tab.initialized)
+            && let Some(backend) = backend.upgrade()
+        {
+            backend.force_reinject(id).await;
         }
         self.repairs.lock().await.remove(id);
     }
@@ -772,7 +907,7 @@ impl Browser {
             let Some(tab) = tabs.get_mut(id) else {
                 return json!({"success": true, "message": "Success"});
             };
-            if tab.pending_add.is_empty() && tab.pending_remove.is_empty() {
+            if tab.pending_add.is_empty() && tab.pending_remove.is_empty() && !remove_all_first {
                 return json!({"success": true, "message": "Success"});
             }
             let adds = std::mem::take(&mut tab.pending_add);
@@ -789,7 +924,7 @@ impl Browser {
             .iter()
             .map(|(id, css)| json!({"id": id, "css": css}))
             .collect::<Vec<_>>();
-        let js_data = python_json_dump(&json!({"add": add, "remove": removes}));
+        let js_data = python_json_dump(&json!({"add": add, "remove": &removes}));
         let extra = if remove_all_first {
             "expected.clear(); document.querySelectorAll('.css-loader-style').forEach(x => x.remove());"
         } else {
@@ -799,13 +934,36 @@ impl Browser {
         js.push_str(&js_data);
         js.push_str(";\n\n            const expected = window.__cssLoaderExpected instanceof Set ? window.__cssLoaderExpected : (window.__cssLoaderExpected = new Set());\n\n            ");
         js.push_str(extra);
-        js.push_str("\n\n            css_data.add.forEach(x => {\n                expected.add(x.id);\n                if (document.getElementById(x.id) !== null){\n                    return;\n                }\n\n                let style = document.createElement('style');\n\t            style.id = x.id;\n                style.classList.add('css-loader-style');\n\t            document.head.append(style);\n\t            style.textContent = x.css;\n            });\n            \n            css_data.remove.forEach(x => {\n                expected.delete(x);\n                let style = document.getElementById(x);\n                style?.parentNode.removeChild(style);\n            });\n        })()\n        ");
+        js.push_str("\n\n            if (document.head && !document.getElementById('test_css_loaded')) {\n                const marker = document.createElement('div');\n                marker.id = 'test_css_loaded';\n                document.head.append(marker);\n            }\n\n            css_data.add.forEach(x => {\n                expected.add(x.id);\n                if (document.getElementById(x.id) !== null){\n                    return;\n                }\n\n                let style = document.createElement('style');\n\t            style.id = x.id;\n                style.classList.add('css-loader-style');\n\t            document.head.append(style);\n\t            style.textContent = x.css;\n            });\n            \n            css_data.remove.forEach(x => {\n                expected.delete(x);\n                let style = document.getElementById(x);\n                style?.parentNode.removeChild(style);\n            });\n        })()\n        ");
         while retry > 0 {
             retry -= 1;
             let cdp = self.connection.lock().await.clone();
             if let Some(cdp) = cdp
                 && evaluate(&cdp, &session, &js, true).await.is_some()
             {
+                let source = {
+                    let mut tabs = self.tabs.lock().await;
+                    let Some(tab) = tabs.get_mut(id) else {
+                        return Value::String("Undefined".into());
+                    };
+                    let mut changed = remove_all_first && !tab.applied_styles.is_empty();
+                    if remove_all_first {
+                        tab.applied_styles.clear();
+                    }
+                    for (style_id, css) in &adds {
+                        if !tab.applied_styles.contains_key(style_id) {
+                            tab.applied_styles.insert(style_id.clone(), css.clone());
+                            changed = true;
+                        }
+                    }
+                    for style_id in &removes {
+                        changed |= tab.applied_styles.shift_remove(style_id).is_some();
+                    }
+                    changed.then(|| preload_script(&tab.applied_styles))
+                };
+                if let Some(source) = source {
+                    self.update_preload_script(id, &cdp, &session, source).await;
+                }
                 return Value::String("Undefined".into());
             }
             log::warn!("Transaction failed! retrying in 0.2 seconds");
@@ -837,6 +995,22 @@ impl Browser {
                         .await
                         .is_some()
                 {
+                    let source = {
+                        let mut tabs = self.tabs.lock().await;
+                        let Some(tab) = tabs.get_mut(&id) else {
+                            break;
+                        };
+                        if tab.applied_styles.is_empty() {
+                            None
+                        } else {
+                            tab.applied_styles.clear();
+                            Some(preload_script(&tab.applied_styles))
+                        }
+                    };
+                    if let Some(source) = source {
+                        self.update_preload_script(&id, &cdp, &session, source)
+                            .await;
+                    }
                     break;
                 }
                 log::warn!("Transaction failed! retrying in 0.2 seconds");
