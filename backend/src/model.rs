@@ -45,7 +45,11 @@ impl Inject {
         if self.css.is_some() {
             return Ok(());
         }
-        let source = fs::read_to_string(&self.path).map_err(|e| e.to_string())?;
+        // Python reads CSS in text mode, which turns \r\n and lone \r into \n.
+        let source = fs::read_to_string(&self.path)
+            .map_err(|e| e.to_string())?
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
         let mut css = CLASS_PATTERN
             .replace_all(&source, |captures: &regex::Captures<'_>| {
                 let token = &captures[0][1..];
@@ -1008,5 +1012,15 @@ mod tests {
     fn negative_hue_wraps_and_fractional_hsl_parses() {
         assert_eq!(parse_hsl("hsl(0, 50%, 50%)"), Some((191, 63, 63)));
         assert!(parse_hsl("hsl(180, 50.5%, 40%)").is_some());
+    }
+
+    #[test]
+    fn css_line_endings_match_python_text_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crlf.css");
+        fs::write(&path, "a {\r\n  color: red;\r}\r\n").unwrap();
+        let mut inject = Inject::new(path, vec!["desktop".into()], None);
+        inject.load(&HashMap::new()).unwrap();
+        assert_eq!(inject.css.as_deref(), Some("a {\n  color: red;\n}\n"));
     }
 }
