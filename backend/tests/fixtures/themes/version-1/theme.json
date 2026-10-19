@@ -1,0 +1,1 @@
+{"name":"Theme One","display_name":"01 Theme One","id":"theme-one","version":"1.0","author":"Fixture","manifest_version":1,"inject":{"base.css":["desktop"]},"patches":{"Color":{"default":"Blue","Blue":{"blue.css":["desktop"]},"Red":{"red.css":["store"]}}}}

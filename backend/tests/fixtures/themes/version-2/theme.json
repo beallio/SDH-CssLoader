@@ -1,0 +1,1 @@
+{"name":"Theme Two","display_name":"02 Theme Two","manifest_version":2,"inject":{"base.css":["custom"]},"tabs":{"custom":["desktopchat"]},"patches":{"Density":{"default":"compact","type":"slider","values":{"compact":{"compact.css":["desktop"]},"roomy":{"roomy.css":["store"]}}}}}

@@ -1,0 +1,2 @@
+body { color: var(--v1); }
+.old-class, [class*="old-class"] { color: red; }

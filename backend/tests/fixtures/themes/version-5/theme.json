@@ -1,0 +1,1 @@
+{"name":"Theme Five","display_name":"05 Theme Five","manifest_version":5,"patches":{"Scale":{"default":"100%","type":"slider","values":{"100%":{"scale.css":["desktop"]},"125%":{"scale2.css":["desktop"]}}}}}

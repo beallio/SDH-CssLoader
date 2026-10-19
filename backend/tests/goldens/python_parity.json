@@ -1,0 +1,310 @@
+{
+  "themes": [
+    {
+      "id": "theme-one",
+      "name": "Theme One",
+      "display_name": "01 Theme One",
+      "version": "1.0",
+      "author": "Fixture",
+      "enabled": true,
+      "patches": [
+        {
+          "name": "Color",
+          "default": "Blue",
+          "value": "Blue",
+          "options": [
+            "Blue",
+            "Red"
+          ],
+          "type": "dropdown",
+          "components": []
+        }
+      ],
+      "bundled": false,
+      "require": 1,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Theme Two",
+      "name": "Theme Two",
+      "display_name": "02 Theme Two",
+      "version": "v1.0",
+      "author": "",
+      "enabled": true,
+      "patches": [
+        {
+          "name": "Density",
+          "default": "compact",
+          "value": "compact",
+          "options": [
+            "compact",
+            "roomy"
+          ],
+          "type": "slider",
+          "components": []
+        }
+      ],
+      "bundled": false,
+      "require": 2,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Theme Three",
+      "name": "Theme Three",
+      "display_name": "03 Theme Three",
+      "version": "v1.0",
+      "author": "",
+      "enabled": true,
+      "patches": [
+        {
+          "name": "Enabled",
+          "default": "No",
+          "value": "Yes",
+          "options": [
+            "No",
+            "Yes"
+          ],
+          "type": "checkbox",
+          "components": []
+        }
+      ],
+      "bundled": false,
+      "require": 3,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Theme Four",
+      "name": "Theme Four",
+      "display_name": "04 Theme Four",
+      "version": "v1.0",
+      "author": "",
+      "enabled": false,
+      "patches": [
+        {
+          "name": "Marker",
+          "default": "Only",
+          "value": "Only",
+          "options": [
+            "Only"
+          ],
+          "type": "none",
+          "components": []
+        }
+      ],
+      "bundled": false,
+      "require": 4,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Theme Five",
+      "name": "Theme Five",
+      "display_name": "05 Theme Five",
+      "version": "v1.0",
+      "author": "",
+      "enabled": false,
+      "patches": [
+        {
+          "name": "Scale",
+          "default": "100%",
+          "value": "100%",
+          "options": [
+            "100%",
+            "125%"
+          ],
+          "type": "slider",
+          "components": []
+        }
+      ],
+      "bundled": false,
+      "require": 5,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Theme Six",
+      "name": "Theme Six",
+      "display_name": "06 Theme Six",
+      "version": "v1.0",
+      "author": "",
+      "enabled": true,
+      "patches": [],
+      "bundled": false,
+      "require": 6,
+      "dependencies": [
+        "Theme Two"
+      ],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Theme Seven",
+      "name": "Theme Seven",
+      "display_name": "07 Theme Seven",
+      "version": "v1.0",
+      "author": "",
+      "enabled": false,
+      "patches": [],
+      "bundled": false,
+      "require": 7,
+      "dependencies": [
+        "Theme Three"
+      ],
+      "flags": [
+        "OPTIONAL_DEPENDENCIES",
+        "KEEP_DEPENDENCIES"
+      ],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Theme Eight",
+      "name": "Theme Eight",
+      "display_name": "08 Theme Eight",
+      "version": "v1.0",
+      "author": "",
+      "enabled": false,
+      "patches": [],
+      "bundled": false,
+      "require": 8,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Theme Nine",
+      "name": "Theme Nine",
+      "display_name": "09 Theme Nine",
+      "version": "v1.0",
+      "author": "",
+      "enabled": true,
+      "patches": [
+        {
+          "name": "Accent",
+          "default": "plain",
+          "value": "plain",
+          "options": [
+            "plain",
+            "other"
+          ],
+          "type": "dropdown",
+          "components": [
+            {
+              "name": "Brand",
+              "type": "color-picker",
+              "on": "plain",
+              "value": "#a1b2c3"
+            },
+            {
+              "name": "Wallpaper",
+              "type": "image-picker",
+              "on": "plain",
+              "value": "wallpaper.png"
+            }
+          ]
+        }
+      ],
+      "bundled": false,
+      "require": 9,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "Existing.profile",
+      "name": "Existing.profile",
+      "display_name": "Existing",
+      "version": "v1.0",
+      "author": "",
+      "enabled": false,
+      "patches": [],
+      "bundled": false,
+      "require": 9,
+      "dependencies": [
+        "Theme One"
+      ],
+      "flags": [
+        "PRESET"
+      ],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "legacy-css",
+      "name": "legacy-css",
+      "display_name": "legacy-css",
+      "version": "v1.0",
+      "author": "",
+      "enabled": false,
+      "patches": [],
+      "bundled": false,
+      "require": 1,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    },
+    {
+      "id": "sfp-theme",
+      "name": "sfp-theme",
+      "display_name": "sfp-theme",
+      "version": "v1.0",
+      "author": "",
+      "enabled": false,
+      "patches": [],
+      "bundled": false,
+      "require": 1,
+      "dependencies": [],
+      "flags": [],
+      "created": null,
+      "modified": null
+    }
+  ],
+  "fails": [
+    [
+      "broken-theme",
+      "'name'"
+    ]
+  ],
+  "css_by_tab": {
+    "!friendsui-container": [
+      ".custom { color: #010203; }\n"
+    ],
+    "Steam|SteamLibraryWindow": [
+      ".compact { padding: 1px; }\n",
+      ".is-on { display: block; }\n",
+      ".six { color: purple; }\n",
+      ".nine { color: #123456; }\n",
+      ".plain { color: white; }\n",
+      ":root { --brand-color: #a1b2c3; --brand-color_r: 161; --brand-color_g: 178; --brand-color_b: 195; --brand-color_rgb: 161, 178, 195; }",
+      ":root { --brand-wallpaper: url(/themes_custom/wallpaper.png) }",
+      "body { color: var(--v1); }\n.new-class, [class*=\"new-class\"] { color: red; }\n",
+      ".blue { color: blue; }\n"
+    ]
+  },
+  "configs": {
+    "version-1": "{\"active\": true, \"Color\": \"Blue\"}",
+    "version-2": "{\"active\": true, \"Density\": \"compact\"}",
+    "version-3": "{\"active\": true, \"Enabled\": \"Yes\"}",
+    "version-6": "{\"active\": true}",
+    "version-9": "{\"active\": true, \"Accent\": {\"value\": \"plain\", \"components\": {\"Brand\": \"#a1b2c3\", \"Wallpaper\": \"wallpaper.png\"}}}"
+  },
+  "store": "fixtureKey:value:with:colons\nmultiline:line1line2",
+  "preset_theme_json": "{\"display_name\": \"Parity Profile\", \"name\": \"Parity Profile.profile\", \"manifest_version\": 9, \"flags\": [\"PRESET\"], \"dependencies\": {\"Theme One\": {\"Color\": \"Blue\"}, \"Theme Two\": {\"Density\": \"compact\"}, \"Theme Three\": {\"Enabled\": \"Yes\"}, \"Theme Six\": {}, \"Theme Nine\": {\"Accent\": {\"value\": \"plain\", \"components\": {\"Brand\": \"#a1b2c3\", \"Wallpaper\": \"wallpaper.png\"}}}}}"
+}

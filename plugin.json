@@ -2,6 +2,7 @@
   "name": "CSS Loader",
   "author": "DeckThemes",
   "flags": [],
+  "backend": "bin/backend",
   "publish": {
     "tags": ["style"],
     "description": "Dynamically loads themes developed with CSS into the Steam UI. For more information, visit deckthemes.com.",

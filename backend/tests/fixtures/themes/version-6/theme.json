@@ -1,0 +1,1 @@
+{"name":"Theme Six","display_name":"06 Theme Six","manifest_version":6,"dependencies":{"Theme Two":{"Density":"roomy"}},"inject":{"six.css":["desktop"]}}

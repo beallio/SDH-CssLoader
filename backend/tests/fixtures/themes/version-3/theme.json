@@ -1,0 +1,1 @@
+{"name":"Theme Three","display_name":"03 Theme Three","manifest_version":3,"patches":{"Enabled":{"default":"No","type":"checkbox","values":{"No":{"off.css":["desktop"]},"Yes":{"on.css":["desktop"]}}}}}

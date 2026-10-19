@@ -1,13 +1,13 @@
-import { storeRead, toast } from "../../python";
-import { server, globalState } from "../pythonRoot";
+import { callBackend, storeRead, toast } from "../../python";
+import { globalState } from "../pythonRoot";
 import { booleanStoreRead, stringStoreRead } from "./storeUtils";
 
 export function enableServer() {
-  return server!.callPluginMethod("enable_server", {});
+  return callBackend("enable_server");
 }
 
 export async function getServerState() {
-  const deckyRes = await server!.callPluginMethod<{}, boolean>("get_server_state", {});
+  const deckyRes = await callBackend<boolean>("get_server_state");
   if (!deckyRes.success) {
     toast("Error fetching server state", deckyRes.result);
     return false;
@@ -16,7 +16,7 @@ export async function getServerState() {
 }
 
 export async function getWatchState() {
-  const deckyRes = await server!.callPluginMethod<{}, boolean>("get_watch_state", {});
+  const deckyRes = await callBackend<boolean>("get_watch_state");
   if (!deckyRes.success) {
     toast("Error fetching watch state", deckyRes.result);
     return false;
@@ -29,28 +29,17 @@ export async function getBetaTranslationsState() {
 }
 
 export function toggleWatchState(bool: boolean, onlyThisSession: boolean = false) {
-  return server!.callPluginMethod<{ enable: boolean; only_this_session: boolean }, void>(
-    "toggle_watch_state",
-    {
-      enable: bool,
-      only_this_session: onlyThisSession,
-    }
-  );
+  return callBackend("toggle_watch_state", bool, onlyThisSession);
 }
 
 // Todo: when i rewrite store interop, move this
 export function setHiddenMotd(id: string) {
-  return server!.callPluginMethod<{ key: string; val: string }>("store_write", {
-    key: "hiddenMotd",
-    val: id,
-  });
+  return callBackend("store_write", "hiddenMotd", id);
 }
 export function getHiddenMotd() {
-  return server!.callPluginMethod<{ key: string }, string>("store_read", {
-    key: "hiddenMotd",
-  });
+  return callBackend<string>("store_read", "hiddenMotd");
 }
 
 export function fetchClassMappings() {
-  return server!.callPluginMethod<{}>("fetch_class_mappings", {});
+  return callBackend("fetch_class_mappings");
 }

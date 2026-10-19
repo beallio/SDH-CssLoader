@@ -1,0 +1,1 @@
+{"name":"Theme Seven","display_name":"07 Theme Seven","manifest_version":7,"flags":["optional_dependencies","keep_dependencies"],"dependencies":{"Theme Three":{}},"inject":{"seven.css":["desktopoverlay"]}}

@@ -14,12 +14,34 @@ export function setStateClass(s: CssLoaderState): void {
   globalState = s;
 }
 
+type BackendResult<T> = { success: true; result: T } | { success: false; result: string };
+type DeckyBackend = { call: (method: string, ...args: unknown[]) => Promise<unknown> };
+declare global {
+  interface Window {
+    __DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit: {
+      connect: (version: number, pluginName: string) => DeckyBackend;
+    };
+  }
+}
+let backend: DeckyBackend | undefined;
+
+// The fork's native backend refuses legacy callPluginMethod calls; use the API v1 positional route.
+export async function callBackend<T = unknown>(method: string, ...args: unknown[]): Promise<BackendResult<T>> {
+  backend ??= window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit.connect(1, "CSS Loader");
+  try {
+    // Unchecked: the backend owns the result shape, as it did with callPluginMethod.
+    return { success: true, result: (await backend.call(method, ...args)) as T };
+  } catch (e) {
+    return { success: false, result: String(e) };
+  }
+}
+
 export async function openFilePicker(path: string) {
   return await server!.openFilePicker(path, true);
 }
 
 export function fetchThemePath() {
-  return server!.callPluginMethod("fetch_theme_path", {});
+  return callBackend<string>("fetch_theme_path");
 }
 
 export function resolve(promise: Promise<any>, setter: any) {
@@ -99,14 +121,11 @@ export async function changePreset(themeName: string, themeList: Theme[]) {
 
 export async function getInstalledThemes(): Promise<any> {
   const setGlobalState = globalState!.setGlobalState.bind(globalState);
-  const errorRes = await server!.callPluginMethod<{}, { fails: ThemeError[] }>(
-    "get_last_load_errors",
-    {}
-  );
+  const errorRes = await callBackend<{ fails: ThemeError[] }>("get_last_load_errors");
   if (errorRes.success) {
     setGlobalState("themeErrors", errorRes.result.fails);
   }
-  const themeRes = await server!.callPluginMethod<{}, Theme[]>("get_themes", {});
+  const themeRes = await callBackend<Theme[]>("get_themes");
   if (themeRes.success) {
     setGlobalState("localThemeList", themeRes.result);
     return themeRes.result;
@@ -114,13 +133,13 @@ export async function getInstalledThemes(): Promise<any> {
 }
 
 export async function reloadBackend(): Promise<void> {
-  return server!.callPluginMethod<{}, { fails: ThemeError[] }>("reset", {}).then((res) => {
+  return callBackend<{ fails: ThemeError[] }>("reset").then((res) => {
     return getInstalledThemes();
   });
 }
 
 export function getThemes() {
-  return server!.callPluginMethod<{}, Theme[]>("get_themes", {});
+  return callBackend<Theme[]>("get_themes");
 }
 
 export function setThemeState(
@@ -129,20 +148,11 @@ export function setThemeState(
   set_deps?: boolean,
   set_deps_value?: boolean
 ): Promise<any> {
-  return server!.callPluginMethod("set_theme_state", {
-    name: name,
-    state: state,
-    set_deps: set_deps ?? true,
-    set_deps_value: set_deps_value ?? true,
-  });
+  return callBackend("set_theme_state", name, state, set_deps ?? true, set_deps_value ?? true);
 }
 
 export function setPatchOfTheme(themeName: string, patchName: string, value: string): Promise<any> {
-  return server!.callPluginMethod("set_patch_of_theme", {
-    themeName: themeName,
-    patchName: patchName,
-    value: value,
-  });
+  return callBackend("set_patch_of_theme", themeName, patchName, value);
 }
 
 export function setComponentOfThemePatch(
@@ -151,12 +161,7 @@ export function setComponentOfThemePatch(
   componentName: string,
   value: string
 ): Promise<any> {
-  return server!.callPluginMethod("set_component_of_theme_patch", {
-    themeName: themeName,
-    patchName: patchName,
-    componentName: componentName,
-    value: value,
-  });
+  return callBackend("set_component_of_theme_patch", themeName, patchName, componentName, value);
 }
 
 export function toast(title: string, message: string) {
@@ -176,31 +181,31 @@ export function toast(title: string, message: string) {
 
 export function downloadThemeFromUrl(themeId: string): Promise<any> {
   const { apiUrl } = globalState!.getPublicState();
-  return server!.callPluginMethod("download_theme_from_url", { id: themeId, url: apiUrl });
+  return callBackend("download_theme_from_url", themeId, apiUrl);
 }
 
 export function deleteTheme(themeName: string): Promise<any> {
-  return server!.callPluginMethod("delete_theme", { themeName: themeName });
+  return callBackend("delete_theme", themeName);
 }
 
 export function storeRead(key: string) {
-  return server!.callPluginMethod("store_read", { key: key });
+  return callBackend<string>("store_read", key);
 }
 
 export function storeWrite(key: string, value: string) {
-  return server!.callPluginMethod("store_write", { key: key, val: value });
+  return callBackend("store_write", key, value);
 }
 
 export function enableServer() {
-  return server!.callPluginMethod("enable_server", {});
+  return callBackend("enable_server");
 }
 export function getServerState() {
-  return server!.callPluginMethod<{}, boolean>("get_server_state", {});
+  return callBackend<boolean>("get_server_state");
 }
 
 export function getBackendVersion(): Promise<any> {
   const setGlobalState = globalState!.setGlobalState.bind(globalState);
-  return server!.callPluginMethod<{}, Theme[]>("get_backend_version", {}).then((data) => {
+  return callBackend<number>("get_backend_version").then((data) => {
     if (data.success) {
       setGlobalState("backendVersion", data.result);
     }
@@ -209,7 +214,7 @@ export function getBackendVersion(): Promise<any> {
 }
 
 export function dummyFunction() {
-  return server!.callPluginMethod<{}, boolean>("dummy_function", {});
+  return callBackend<boolean>("dummy_function");
 }
 
 export function genericGET(fetchUrl: string, authToken?: string | undefined) {
@@ -263,12 +268,9 @@ export function pinTheme(id: string) {
 }
 
 export function generatePreset(name: string) {
-  return server!.callPluginMethod("generate_preset_theme", { name: name });
+  return callBackend("generate_preset_theme", name);
 }
 
 export function generatePresetFromThemeNames(name: string, themeNames: string[]) {
-  return server!.callPluginMethod("generate_preset_theme_from_theme_names", {
-    name: name,
-    themeNames: themeNames,
-  });
+  return callBackend("generate_preset_theme_from_theme_names", name, themeNames);
 }
