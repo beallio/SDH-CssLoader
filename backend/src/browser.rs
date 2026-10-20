@@ -1085,3 +1085,79 @@ async fn evaluate(
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+
+    /// Scripted CDP endpoint with one Steam popup, shaped like a live Big Picture window:
+    /// the target URL is about:blank while the document reports the opener's URL.
+    async fn fake_steam_popup_cdp(listener: TcpListener) {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        let info = json!({
+            "targetId": "popup",
+            "type": "page",
+            "title": "Steam Big Picture Mode",
+            "url": "about:blank?createflags=6292738&minwidth=853&minheight=534"
+        });
+        while let Some(Ok(Message::Text(text))) = ws.next().await {
+            let command: Value = serde_json::from_str(&text).unwrap();
+            let result = match command["method"].as_str().unwrap_or_default() {
+                "Target.getTargets" => json!({"targetInfos": [info]}),
+                "Target.attachToTarget" => {
+                    let event = json!({
+                        "method": "Target.attachedToTarget",
+                        "params": {"sessionId": "session", "targetInfo": info}
+                    });
+                    ws.send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                    json!({"sessionId": "session"})
+                }
+                "Page.addScriptToEvaluateOnNewDocument" => json!({"identifier": "1"}),
+                "Runtime.evaluate" if command["params"]["expression"] == TAB_INIT_JS => json!({
+                    "result": {"type": "object", "value": {
+                        "title": "Steam Big Picture Mode",
+                        "url": "https://steamloopback.host/index.html?IN_GAMESCOPE=true",
+                        "readyState": "complete",
+                        "classes": []
+                    }}
+                }),
+                "Runtime.evaluate" => json!({"result": {"type": "boolean", "value": true}}),
+                _ => json!({}),
+            };
+            let response = json!({"id": command["id"], "result": result});
+            ws.send(Message::Text(response.to_string().into()))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn initializes_popup_whose_document_url_differs_from_target_url() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(fake_steam_popup_cdp(listener));
+        let (stream, _) = connect_async(url).await.unwrap();
+        let browser = Browser::new();
+        let connection = Arc::clone(&browser);
+        tokio::spawn(async move { connection.connected(stream, Weak::new()).await });
+
+        let initialized = timeout(Duration::from_secs(3), async {
+            while !browser
+                .tabs
+                .lock()
+                .await
+                .get("popup")
+                .is_some_and(|tab| tab.initialized)
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(initialized.is_ok(), "the Steam popup was never initialized");
+    }
+}
