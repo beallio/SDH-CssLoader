@@ -1,5 +1,5 @@
 import { VFC } from "react";
-import { FileSelectionType, openFilePicker } from "@decky/api";
+import { openFilePicker, type FileSelectionType } from "@decky/api";
 
 import * as python from "../python";
 
@@ -36,7 +36,8 @@ export const PatchComponent: VFC<{
         }
         // These have to
         async function pickImage(rootPath: string) {
-          const res = await openFilePicker(FileSelectionType.FILE, rootPath, true);
+          // FileSelectionType is an ambient const enum, which per-file transpilers cannot inline.
+          const res = await openFilePicker(0 satisfies FileSelectionType.FILE, rootPath, true);
           if (!res.path.includes(rootPath)) {
             python.toast("Invalid File", "Images must be within themes folder");
             return;

@@ -14,7 +14,8 @@
     "noImplicitAny": true,
     "strict": true,
     "allowSyntheticDefaultImports": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "isolatedModules": true
   },
   "include": ["src"],
   "exclude": ["node_modules"]
