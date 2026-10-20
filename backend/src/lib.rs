@@ -1142,8 +1142,9 @@ async fn remove_one(
             .get(&selector)
             .cloned()
             .unwrap_or_default();
+        // Page-scoped reinjects record IDs only for selectors that matched an open page.
         if ids.is_empty() {
-            return Ok(());
+            continue;
         }
         for id in ids {
             browser.remove_css(&selector, &id).await;
@@ -1893,6 +1894,30 @@ mod tests {
                 .is_ok()
         );
         assert!(core.injects[good].enabled);
+    }
+
+    #[tokio::test]
+    async fn remove_skips_selectors_without_injected_styles() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/themes");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("themes");
+        copy_tree(&fixture, &root).unwrap();
+        let backend = Backend::open_for_tests(root.clone(), "test").await.unwrap();
+        let mut core = backend.core.lock().await;
+        let inject = core.injects.len();
+        core.injects.push(Inject {
+            path: root.join("unused.css"),
+            selectors: vec!["~not-open~".into(), "~open~".into()],
+            inline_css: Some("x".into()),
+            css: Some("x".into()),
+            enabled: true,
+            uuids: [("~open~".to_owned(), vec!["live".to_owned()])].into(),
+        });
+        remove_one(&mut core, &backend.browser, inject)
+            .await
+            .unwrap();
+        assert!(!core.injects[inject].enabled);
+        assert!(core.injects[inject].uuids["~open~"].is_empty());
     }
     #[test]
     fn rejects_zip_traversal() {
