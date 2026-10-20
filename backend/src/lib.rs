@@ -23,6 +23,7 @@ use tokio::sync::{Mutex, watch};
 
 static BACKEND: OnceLock<Arc<Backend>> = OnceLock::new();
 const MAX_MANIFEST_VERSION: u64 = 9;
+const MAPPING_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 struct Core {
     root: PathBuf,
@@ -33,7 +34,7 @@ struct Core {
     ordered_injects: Vec<usize>,
     errors: Vec<Value>,
     class_mappings: HashMap<String, String>,
-    mapping_fetch_succeeded: bool,
+    last_mapping_fetch: Option<Instant>,
     busy: bool,
     server_enabled: bool,
     watcher: Option<RecommendedWatcher>,
@@ -42,6 +43,7 @@ struct Core {
 pub struct Backend {
     core: Mutex<Core>,
     mutations: Mutex<()>,
+    mapping_fetch: Mutex<()>,
     browser: Arc<Browser>,
     ready: watch::Sender<bool>,
 }
@@ -77,12 +79,13 @@ impl Backend {
                 ordered_injects: Vec::new(),
                 errors: Vec::new(),
                 class_mappings: HashMap::new(),
-                mapping_fetch_succeeded: false,
+                last_mapping_fetch: None,
                 busy: false,
                 server_enabled: false,
                 watcher: None,
             }),
             mutations: Mutex::new(()),
+            mapping_fetch: Mutex::new(()),
             browser: Browser::new(),
             ready,
         }))
@@ -102,12 +105,13 @@ impl Backend {
                 ordered_injects: Vec::new(),
                 errors: Vec::new(),
                 class_mappings: HashMap::new(),
-                mapping_fetch_succeeded: false,
+                last_mapping_fetch: None,
                 busy: false,
                 server_enabled: false,
                 watcher: None,
             }),
             mutations: Mutex::new(()),
+            mapping_fetch: Mutex::new(()),
             browser: Browser::new(),
             ready,
         });
@@ -1559,6 +1563,20 @@ fn ensure_slash(base_url: &str) -> String {
     }
 }
 
+fn mapping_refresh_due(last_success: Option<Instant>, now: Instant) -> bool {
+    last_success.is_none_or(|last| now.duration_since(last) >= MAPPING_REFRESH_INTERVAL)
+}
+
+fn save_class_mappings(root: &Path, content: &[u8]) -> Result<HashMap<String, String>, String> {
+    let mut candidate = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
+    candidate.write_all(content).map_err(|e| e.to_string())?;
+    let mappings = load_class_mappings(candidate.path())?;
+    candidate
+        .persist(root.join("css_translations.json"))
+        .map_err(|e| e.error.to_string())?;
+    Ok(mappings)
+}
+
 async fn fetch_mappings_periodically(backend: Weak<Backend>) {
     loop {
         if let Some(backend) = backend.upgrade() {
@@ -1571,19 +1589,20 @@ async fn fetch_mappings_periodically(backend: Weak<Backend>) {
 }
 
 async fn fetch_class_mappings(backend: &Backend, force: bool) -> bool {
-    let (root, beta_override, steam, already_succeeded) = {
+    let _fetch = backend.mapping_fetch.lock().await;
+    let (root, beta_override, steam, last_fetch) = {
         let mut core = backend.core.lock().await;
         if force {
-            core.mapping_fetch_succeeded = false;
+            core.last_mapping_fetch = None;
         }
         (
             core.root.clone(),
             store_read(&core.root, "beta_translations").unwrap_or_default(),
             core.steam.clone(),
-            core.mapping_fetch_succeeded,
+            core.last_mapping_fetch,
         )
     };
-    if already_succeeded {
+    if !mapping_refresh_due(last_fetch, Instant::now()) {
         return false;
     }
     let check_connectivity = true;
@@ -1641,25 +1660,22 @@ async fn fetch_class_mappings(backend: &Backend, force: bool) -> bool {
         if content.iter().all(u8::is_ascii_whitespace) {
             return Err("Empty response".to_owned());
         }
-        fs::write(root.join("css_translations.json"), &content).map_err(|e| e.to_string())?;
-        Ok::<(), String>(())
+        save_class_mappings(&root, &content)
     }
     .await;
     match fetched {
-        Ok(()) => {
-            match load_class_mappings(&root.join("css_translations.json")) {
-                Ok(mappings) => {
-                    let mut core = backend.core.lock().await;
-                    core.class_mappings = mappings;
-                    core.mapping_fetch_succeeded = true;
-                }
-                Err(error) => {
-                    log::warn!("Failed to load CSS mappings: {error}");
-                    return false;
-                }
-            }
+        Ok(mappings) => {
+            let changed = {
+                let mut core = backend.core.lock().await;
+                let changed = core.class_mappings != mappings;
+                core.class_mappings = mappings;
+                core.last_mapping_fetch = Some(Instant::now());
+                changed
+            };
             log::info!("Fetched css translations from server");
-            let _ = backend.reset(true).await;
+            if changed {
+                let _ = backend.reset(true).await;
+            }
             true
         }
         Err(error) => {
@@ -1674,6 +1690,67 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::fs;
+
+    #[test]
+    fn rejected_mapping_download_keeps_the_working_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("css_translations.json");
+        let original = br#"{"id":["old","current"]}"#;
+        fs::write(&cache, original).unwrap();
+        let invalid: &[&[u8]] = &[
+            b"{broken",
+            b"{}",
+            b"[]",
+            b"null",
+            br#"{"id":"class"}"#,
+            br#"{"id":[]}"#,
+            br#"{"id":[3,"latest"]}"#,
+            br#"{"id":["old",false]}"#,
+        ];
+        for content in invalid {
+            assert!(save_class_mappings(dir.path(), content).is_err());
+            assert_eq!(fs::read(&cache).unwrap(), original);
+        }
+        assert_eq!(
+            load_class_mappings(&cache).unwrap(),
+            HashMap::from([("old".to_owned(), "current".to_owned())])
+        );
+    }
+
+    #[test]
+    fn valid_mapping_download_replaces_the_cache_and_translations() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("css_translations.json");
+        fs::write(&cache, br#"{"id":["old","previous"]}"#).unwrap();
+        let updated = br#"{"id":["old","middle","latest"]}"#;
+        assert_eq!(
+            save_class_mappings(dir.path(), updated).unwrap(),
+            HashMap::from([
+                ("old".to_owned(), "latest".to_owned()),
+                ("middle".to_owned(), "latest".to_owned()),
+            ])
+        );
+        assert_eq!(fs::read(&cache).unwrap(), updated);
+    }
+
+    #[test]
+    fn mapping_refresh_resumes_at_the_hourly_deadline() {
+        let fetched = Instant::now();
+        assert!(mapping_refresh_due(None, fetched));
+        assert!(!mapping_refresh_due(Some(fetched), fetched));
+        assert!(!mapping_refresh_due(
+            Some(fetched),
+            fetched + MAPPING_REFRESH_INTERVAL - Duration::from_nanos(1)
+        ));
+        assert!(mapping_refresh_due(
+            Some(fetched),
+            fetched + MAPPING_REFRESH_INTERVAL
+        ));
+        assert!(mapping_refresh_due(
+            Some(fetched),
+            fetched + MAPPING_REFRESH_INTERVAL + Duration::from_secs(1)
+        ));
+    }
 
     #[test]
     fn python_json_matches_default_dump_format() {

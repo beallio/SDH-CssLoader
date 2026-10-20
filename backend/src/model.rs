@@ -844,6 +844,9 @@ pub fn load_class_mappings(path: &Path) -> Result<HashMap<String, String>, Strin
     let object = value
         .as_object()
         .ok_or_else(|| "CSS translations are not a JSON object".to_owned())?;
+    if object.is_empty() {
+        return Err("CSS translations are empty".to_owned());
+    }
     let mut result = HashMap::new();
     for (uid, versions) in object {
         let values = versions
@@ -854,9 +857,10 @@ pub fn load_class_mappings(path: &Path) -> Result<HashMap<String, String>, Strin
             .and_then(Value::as_str)
             .ok_or_else(|| format!("CSS translation '{uid}' has no latest mapping"))?;
         for old in values.iter().take(values.len().saturating_sub(1)) {
-            if let Some(old) = old.as_str() {
-                result.insert(old.to_owned(), latest.to_owned());
-            }
+            let old = old
+                .as_str()
+                .ok_or_else(|| format!("CSS translation '{uid}' contains a non-string class"))?;
+            result.insert(old.to_owned(), latest.to_owned());
         }
     }
     Ok(result)
