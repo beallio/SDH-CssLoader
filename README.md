@@ -21,11 +21,14 @@ Compared with the standard CSS Loader 2.1.4:
 
 We compared this version with the standard Python version on a Steam Deck virtual machine:
 
-- **Turning a theme on or off** takes about 3 ms instead of about 13 ms.
-- **Reloading the plugin** brings your themes back in about 65–85 ms instead of about 130 ms.
-- **Memory use** is about 18 MB instead of about 42 MB.
-- **Idle CPU use** is about a quarter of the Python version's.
-- **Loading the theme list and resetting themes** take the same time in both versions.
+| What we measured | Python version | This version |
+|---|---:|---:|
+| Turn a theme on or off | about 13 ms | about 3 ms |
+| Reload the plugin until themes are back | about 130 ms | about 65–85 ms |
+| Memory use | about 42 MB | about 18 MB |
+| CPU time used while idle for 2 minutes | about 0.08 s | about 0.02 s |
+| Load the theme list | about 1 ms | about 1 ms |
+| Reset themes | about 110 ms | about 110 ms |
 
 These numbers come from a virtual machine, not a real Steam Deck. Your results can be different.
 
