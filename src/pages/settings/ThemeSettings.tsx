@@ -1,6 +1,6 @@
 import { DialogButton, DialogCheckbox, Focusable, PanelSection } from "@decky/ui";
 import { useCssLoaderState } from "../../state";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Flags, Theme } from "../../ThemeTypes";
 import { FullscreenSingleThemeEntry } from "../../components/ThemeSettings/FullscreenSingleThemeEntry";
 import { ThemeErrorCard } from "../../components/ThemeErrorCard";
@@ -15,6 +15,11 @@ export function ThemeSettings() {
 
   const [isInstalling, setInstalling] = useState(false);
   const [mode, setMode] = useState<"view" | "delete">("view");
+
+  // The list is otherwise filled only when the Quick Access panel or theme browser mounts.
+  useEffect(() => {
+    python.getInstalledThemes();
+  }, []);
 
   const sortedList = useMemo(() => {
     return localThemeList
