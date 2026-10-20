@@ -684,7 +684,9 @@ impl Browser {
         else {
             return;
         };
+        // Steam popups keep an about:blank target URL while their document reports the opener's URL.
         if !target_url.is_empty()
+            && !target_url.starts_with("about:blank")
             && value.get("url").and_then(Value::as_str) != Some(target_url.as_str())
         {
             return;
