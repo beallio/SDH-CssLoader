@@ -1,4 +1,4 @@
-import { DialogButton, DialogCheckbox, Focusable, PanelSection } from "decky-frontend-lib";
+import { DialogButton, DialogCheckbox, Focusable, PanelSection } from "@decky/ui";
 import { useCssLoaderState } from "../../state";
 import { useMemo, useState } from "react";
 import { Flags, Theme } from "../../ThemeTypes";

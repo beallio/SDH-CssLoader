@@ -1,4 +1,4 @@
-import { ModalRoot } from "decky-frontend-lib";
+import { ModalRoot } from "@decky/ui";
 import { DepsOptionSelector } from "./DepsOptionSelector";
 import { Theme } from "../ThemeTypes";
 export function OptionalDepsModalRoot({

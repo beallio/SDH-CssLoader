@@ -1,4 +1,4 @@
-import { DialogButton, Focusable, ToggleField, showModal } from "decky-frontend-lib";
+import { DialogButton, Focusable, ToggleField, showModal } from "@decky/ui";
 import { LocalThemeStatus, Theme } from "../../ThemeTypes";
 import { useCssLoaderState } from "../../state";
 import * as python from "../../python";

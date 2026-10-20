@@ -1,4 +1,4 @@
-import { Tabs } from "decky-frontend-lib";
+import { Tabs } from "@decky/ui";
 import { Permissions } from "../../apiTypes";
 import { useCssLoaderState } from "../../state";
 import { LogInPage } from "./LogInPage";

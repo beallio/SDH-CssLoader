@@ -1,4 +1,4 @@
-import { SidebarNavigation } from "decky-frontend-lib";
+import { SidebarNavigation } from "@decky/ui";
 import { BsFolderFill, BsGearFill } from "react-icons/bs";
 import { RiPaintFill, RiSettings2Fill } from "react-icons/ri";
 import { ThemeSettings } from "./ThemeSettings";

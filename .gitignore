@@ -35,6 +35,7 @@ Thumbs.db
 dist/
 
 /backend/target/
+/SDH-CssLoader-*.zip
 
 /.yalc
 yalc.lock

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as python from "../../python";
 import { CssLoaderContextProvider, useCssLoaderState } from "../../state";
-import { Focusable, ModalRoot } from "decky-frontend-lib";
+import { Focusable, ModalRoot } from "@decky/ui";
 import { genericGET } from "../../api";
 import { PartialCSSThemeInfo, ThemeQueryResponse, UserInfo } from "../../apiTypes";
 import { ImSpinner5 } from "react-icons/im";

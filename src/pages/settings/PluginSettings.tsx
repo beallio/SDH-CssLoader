@@ -1,4 +1,4 @@
-import { DropdownItem, Focusable, ToggleField } from "decky-frontend-lib";
+import { DropdownItem, Focusable, ToggleField } from "@decky/ui";
 import { useMemo, useState, useEffect } from "react";
 import { useCssLoaderState } from "../../state";
 import { toast } from "../../python";

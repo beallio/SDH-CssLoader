@@ -1,4 +1,4 @@
-import { Patch, SingleDropdownOption } from "decky-frontend-lib";
+import { Patch, SingleDropdownOption } from "@decky/ui";
 import { createContext, FC, useContext, useEffect, useState } from "react";
 import {
   AccountData,
@@ -206,11 +206,11 @@ export class CssLoaderState {
   }
 
   getGlobalState(key: string) {
-    return this[key];
+    return (this as unknown as Record<string, unknown>)[key];
   }
 
   setGlobalState(key: string, data: any) {
-    this[key] = data;
+    (this as unknown as Record<string, unknown>)[key] = data;
     this.forceUpdate();
   }
 

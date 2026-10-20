@@ -2,7 +2,7 @@ import { Dispatch, SetStateAction } from "react";
 import { Flags, Theme } from "../../ThemeTypes";
 import * as python from "../../python";
 import { OptionalDepsModalRoot } from "../../components";
-import { showModal } from "decky-frontend-lib";
+import { showModal } from "@decky/ui";
 import { enableNavPatch } from "../../deckyPatches/NavPatch";
 import { NavPatchInfoModalRoot } from "../../deckyPatches/NavPatchInfoModal";
 

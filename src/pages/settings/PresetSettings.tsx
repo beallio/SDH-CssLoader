@@ -1,4 +1,4 @@
-import { Focusable, PanelSection } from "decky-frontend-lib";
+import { Focusable, PanelSection } from "@decky/ui";
 import { useCssLoaderState } from "../../state";
 import { Flags, Theme } from "../../ThemeTypes";
 import { useState } from "react";

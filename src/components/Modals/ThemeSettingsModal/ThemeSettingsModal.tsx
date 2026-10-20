@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 
-import { DialogButton, Focusable, ModalRoot, Toggle } from "decky-frontend-lib";
+import { DialogButton, Focusable, ModalRoot, Toggle } from "@decky/ui";
 import { CssLoaderContextProvider, useCssLoaderState } from "../../../state";
 import { Theme } from "../../../ThemeTypes";
 import { globalState } from "../../../python";

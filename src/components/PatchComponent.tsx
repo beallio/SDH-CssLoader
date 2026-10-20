@@ -1,11 +1,12 @@
 import { VFC } from "react";
+import { FileSelectionType, openFilePicker } from "@decky/api";
 
 import * as python from "../python";
 
 import Color from "color";
-import { showModal, ButtonItem, PanelSectionRow } from "decky-frontend-lib";
+import { showModal, ButtonItem, PanelSectionRow } from "@decky/ui";
 
-import { ColorPickerModal } from "decky-frontend-lib";
+import { ColorPickerModal } from "@decky/ui";
 import { ThemePatchComponent } from "../ThemeTypes";
 import { FaFolder } from "react-icons/fa";
 import { useCssLoaderState } from "../state";
@@ -35,7 +36,7 @@ export const PatchComponent: VFC<{
         }
         // These have to
         async function pickImage(rootPath: string) {
-          const res = await python.openFilePicker(rootPath);
+          const res = await openFilePicker(FileSelectionType.FILE, rootPath, true);
           if (!res.path.includes(rootPath)) {
             python.toast("Invalid File", "Images must be within themes folder");
             return;

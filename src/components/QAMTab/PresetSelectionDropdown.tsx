@@ -1,4 +1,4 @@
-import { DropdownItem, PanelSectionRow, showModal } from "decky-frontend-lib";
+import { DropdownItem, PanelSectionRow, showModal } from "@decky/ui";
 import { useMemo } from "react";
 import { FiPlusCircle } from "react-icons/fi";
 import { useRerender } from "../../hooks";

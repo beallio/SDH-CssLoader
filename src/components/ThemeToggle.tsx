@@ -1,4 +1,4 @@
-import { ButtonItem, Focusable, PanelSectionRow, ToggleField, showModal } from "decky-frontend-lib";
+import { ButtonItem, Focusable, PanelSectionRow, ToggleField, showModal } from "@decky/ui";
 import { VFC, useState, useMemo } from "react";
 import { Flags, LocalThemeStatus, Theme, UpdateStatus } from "../ThemeTypes";
 

@@ -1,4 +1,4 @@
-import { DialogButton, Focusable } from "decky-frontend-lib";
+import { DialogButton, Focusable } from "@decky/ui";
 import * as python from "../python";
 
 export function DepsOptionSelector({

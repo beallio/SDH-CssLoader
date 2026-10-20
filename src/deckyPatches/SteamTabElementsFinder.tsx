@@ -1,4 +1,4 @@
-import { getGamepadNavigationTrees } from "decky-frontend-lib";
+import { getGamepadNavigationTrees } from "@decky/ui";
 
 export function getElementFromNavID(navID: string) {
   const all = getGamepadNavigationTrees();

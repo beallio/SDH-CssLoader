@@ -1,4 +1,4 @@
-import { Focusable, PanelSectionRow } from "decky-frontend-lib";
+import { Focusable, PanelSectionRow } from "@decky/ui";
 import { ThemeError } from "../ThemeTypes";
 
 export function ThemeErrorCard({ errorData }: { errorData: ThemeError }) {

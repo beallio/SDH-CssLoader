@@ -1,4 +1,4 @@
-import { DialogButton, Focusable, PanelSection } from "decky-frontend-lib";
+import { DialogButton, Focusable, PanelSection } from "@decky/ui";
 import { useEffect, useState, useMemo } from "react";
 import { Motd } from "../../apiTypes/Motd";
 import { genericGET } from "../../api";

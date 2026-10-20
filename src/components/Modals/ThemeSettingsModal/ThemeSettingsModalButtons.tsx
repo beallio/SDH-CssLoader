@@ -1,4 +1,4 @@
-import { DialogButton, Focusable, showModal } from "decky-frontend-lib";
+import { DialogButton, Focusable, showModal } from "@decky/ui";
 import { LocalThemeStatus, Theme } from "../../../ThemeTypes";
 import { FaDownload, FaEye, FaEyeSlash, FaRegStar, FaStar, FaTrashAlt } from "react-icons/fa";
 import { DeleteConfirmationModalRoot } from "../DeleteConfirmationModal";

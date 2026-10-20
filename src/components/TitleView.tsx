@@ -1,4 +1,4 @@
-import { DialogButton, Navigation, staticClasses, Focusable } from "decky-frontend-lib";
+import { DialogButton, Navigation, staticClasses, Focusable } from "@decky/ui";
 import { BsGearFill } from "react-icons/bs";
 import { FaDownload } from "react-icons/fa";
 import { useCssLoaderState } from "../state";

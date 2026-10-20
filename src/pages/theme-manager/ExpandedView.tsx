@@ -4,7 +4,7 @@ import {
   Navigation,
   showModal,
   ScrollPanelGroup,
-} from "decky-frontend-lib";
+} from "@decky/ui";
 import { useEffect, useRef, useState, VFC } from "react";
 import { ImCog, ImSpinner5 } from "react-icons/im";
 import { BsStar, BsStarFill } from "react-icons/bs";

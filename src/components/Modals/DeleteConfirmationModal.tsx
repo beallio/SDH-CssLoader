@@ -1,6 +1,6 @@
 import { CssLoaderContextProvider } from "../../state";
 import * as python from "../../python";
-import { ConfirmModal, ModalRoot } from "decky-frontend-lib";
+import { ConfirmModal, ModalRoot } from "@decky/ui";
 
 export function DeleteConfirmationModalRoot({
   themesToBeDeleted,

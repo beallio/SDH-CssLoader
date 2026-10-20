@@ -1,9 +1,9 @@
-import { Focusable } from "decky-frontend-lib";
+import { Focusable } from "@decky/ui";
 import { useCssLoaderState } from "../../state";
 import * as python from "../../python";
 import { BrowserSearchFields, LoadMoreButton, VariableSizeCard } from "../../components";
 import { useEffect, useRef, useState } from "react";
-import { isEqual } from "lodash";
+import isEqual from "lodash/isEqual";
 import { getThemes } from "../../api";
 
 export function SubmissionsPage() {

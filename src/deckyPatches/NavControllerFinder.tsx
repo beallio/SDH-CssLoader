@@ -1,4 +1,4 @@
-import { Module, findModuleChild } from "decky-frontend-lib";
+import { Module, findModuleChild } from "@decky/ui";
 
 export const NavController = findModuleChild((m: Module) => {
   if (typeof m !== "object") return undefined;

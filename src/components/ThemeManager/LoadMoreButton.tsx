@@ -1,4 +1,4 @@
-import { DialogButton } from "decky-frontend-lib";
+import { DialogButton } from "@decky/ui";
 import { useState, Dispatch, SetStateAction, useEffect } from "react";
 import { ThemeQueryRequest, ThemeQueryResponse } from "../../apiTypes";
 import { generateParamStr } from "../../logic";

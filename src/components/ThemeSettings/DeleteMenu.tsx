@@ -4,7 +4,7 @@ import {
   Focusable,
   PanelSection,
   showModal,
-} from "decky-frontend-lib";
+} from "@decky/ui";
 import { Theme } from "../../ThemeTypes";
 import { useState } from "react";
 import { DeleteConfirmationModalRoot } from "../Modals/DeleteConfirmationModal";

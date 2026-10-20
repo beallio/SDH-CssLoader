@@ -1,10 +1,5 @@
-import {
-  ButtonItem,
-  definePlugin,
-  PanelSection,
-  PanelSectionRow,
-  ServerAPI,
-} from "decky-frontend-lib";
+import { ButtonItem, PanelSection, PanelSectionRow } from "@decky/ui";
+import { definePlugin, routerHook } from "@decky/api";
 import { useEffect, useState } from "react";
 import * as python from "./python";
 import * as api from "./api";
@@ -106,11 +101,9 @@ function Content() {
   );
 }
 
-export default definePlugin((serverApi: ServerAPI) => {
+export default definePlugin(() => {
   const state: CssLoaderState = new CssLoaderState();
-  python.setServer(serverApi);
   python.setStateClass(state);
-  api.setServer(serverApi);
   api.setStateClass(state);
 
   python.resolve(python.getThemes(), async (allThemes: Theme[]) => {
@@ -167,19 +160,19 @@ export default definePlugin((serverApi: ServerAPI) => {
     }
   });
 
-  serverApi.routerHook.addRoute("/cssloader/theme-manager", () => (
+  routerHook.addRoute("/cssloader/theme-manager", () => (
     <CssLoaderContextProvider cssLoaderStateClass={state}>
       <ThemeManagerRouter />
     </CssLoaderContextProvider>
   ));
 
-  serverApi.routerHook.addRoute("/cssloader/settings", () => (
+  routerHook.addRoute("/cssloader/settings", () => (
     <CssLoaderContextProvider cssLoaderStateClass={state}>
       <SettingsPageRouter />
     </CssLoaderContextProvider>
   ));
 
-  serverApi.routerHook.addRoute("/cssloader/expanded-view", () => (
+  routerHook.addRoute("/cssloader/expanded-view", () => (
     <CssLoaderContextProvider cssLoaderStateClass={state}>
       <ExpandedViewPage />
     </CssLoaderContextProvider>
@@ -191,7 +184,7 @@ export default definePlugin((serverApi: ServerAPI) => {
         <TitleView />
       </CssLoaderContextProvider>
     ),
-    title: <div>CSSLoader</div>,
+    name: "CSS Loader",
     alwaysRender: true,
     content: (
       <CssLoaderContextProvider cssLoaderStateClass={state}>

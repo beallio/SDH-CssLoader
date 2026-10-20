@@ -1,4 +1,4 @@
-import { replacePatch } from "decky-frontend-lib";
+import { replacePatch } from "@decky/ui";
 import { NavController } from "./NavControllerFinder";
 import { globalState, toast, storeWrite } from "../python";
 

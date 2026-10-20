@@ -1,9 +1,9 @@
-import { Focusable } from "decky-frontend-lib";
+import { Focusable } from "@decky/ui";
 import { useLayoutEffect, useState, FC, useEffect, useRef } from "react";
 import * as python from "../../python";
 import { getThemes } from "../../api";
 import { logInWithShortToken } from "../../api";
-import { isEqual } from "lodash";
+import isEqual from "lodash/isEqual";
 
 // Interfaces for the JSON objects the lists work with
 import { useCssLoaderState } from "../../state";

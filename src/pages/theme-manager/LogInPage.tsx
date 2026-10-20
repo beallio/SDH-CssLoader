@@ -1,4 +1,4 @@
-import { DialogButton, Focusable, TextField, ToggleField } from "decky-frontend-lib";
+import { DialogButton, Focusable, TextField, ToggleField } from "@decky/ui";
 import { SiWebauthn } from "react-icons/si";
 import { useEffect, useMemo, useState, VFC } from "react";
 import { logInWithShortToken, logOut } from "../../api";

@@ -2,13 +2,12 @@ import {
   DialogButton,
   Focusable,
   Navigation,
-  Panel,
   PanelSection,
   ScrollPanelGroup,
-} from "decky-frontend-lib";
+} from "@decky/ui";
+import { fetchNoCors } from "@decky/api";
 import { useEffect, useMemo, useState } from "react";
 import { SiKofi, SiPatreon } from "react-icons/si";
-import { server } from "../../python";
 
 export function DonatePage() {
   const [loaded, setLoaded] = useState<boolean>(false);
@@ -25,17 +24,10 @@ export function DonatePage() {
   }, [supporters]);
 
   function fetchSupData() {
-    server!
-      .fetchNoCors<any>("https://api.deckthemes.com/patrons", { method: "GET" })
-      .then((deckyRes) => {
-        if (deckyRes.success) {
-          return deckyRes.result;
-        }
-        throw new Error("unsuccessful");
-      })
+    fetchNoCors("https://api.deckthemes.com/patrons", { method: "GET" })
       .then((res) => {
         if (res.status === 200) {
-          return res.body;
+          return res.text();
         }
         throw new Error("Res not OK");
       })

@@ -1,4 +1,4 @@
-import { Focusable } from "decky-frontend-lib";
+import { Focusable } from "@decky/ui";
 import { FaEyeSlash } from "react-icons/fa";
 import { useCssLoaderState } from "../../state";
 import { Flags } from "../../ThemeTypes";

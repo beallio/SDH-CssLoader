@@ -1,4 +1,4 @@
-import { classMap } from "decky-frontend-lib";
+import { classMap } from "@decky/ui";
 
 export var classHashMap = new Map<string, string>();
 
@@ -7,7 +7,7 @@ export function initializeClassHashMap() {
 
   const allClasses = withoutLocalizationClasses
     .map((module) => {
-      let filteredModule = {};
+      let filteredModule: Record<string, string> = {};
       Object.entries(module).forEach(([propertyName, value]) => {
         // Filter out things that start with a number (eg: Breakpoints like 800px)
         // I have confirmed the new classes don't start with numbers
@@ -22,7 +22,7 @@ export function initializeClassHashMap() {
       return Object.keys(module).length > 0;
     });
 
-  const mappings = allClasses.reduce((acc, cur) => {
+  const mappings = allClasses.reduce<Record<string, string[]>>((acc, cur) => {
     Object.entries(cur).forEach(([property, value]) => {
       if (acc[property]) {
         acc[property].push(value);

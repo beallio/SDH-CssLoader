@@ -1,4 +1,4 @@
-import { DialogButton } from "decky-frontend-lib";
+import { DialogButton } from "@decky/ui";
 import { useCssLoaderState } from "../../state";
 import { Theme } from "../../ThemeTypes";
 import { FaDownload } from "react-icons/fa";

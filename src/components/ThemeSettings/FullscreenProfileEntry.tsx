@@ -1,4 +1,4 @@
-import { DialogButton, Focusable, PanelSectionRow } from "decky-frontend-lib";
+import { DialogButton, Focusable, PanelSectionRow } from "@decky/ui";
 import { Flags, LocalThemeStatus, Theme } from "../../ThemeTypes";
 import { useCssLoaderState } from "../../state";
 import { AiOutlineDownload } from "react-icons/ai";

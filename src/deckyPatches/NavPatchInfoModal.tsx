@@ -1,4 +1,4 @@
-import { DialogButton, Focusable, ConfirmModal } from "decky-frontend-lib";
+import { DialogButton, Focusable, ConfirmModal } from "@decky/ui";
 import { Theme } from "../ThemeTypes";
 import { setNavPatch } from "./NavPatch";
 export function NavPatchInfoModalRoot({

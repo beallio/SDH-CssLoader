@@ -6,43 +6,96 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build SDH-CSSLoader for Decky
+  frontend:
+    name: Build frontend
     runs-on: ubuntu-24.04
 
     steps:
     - name: Checkout
       uses: actions/checkout@v7.0.1
 
-    - name: Set up NodeJS 22
+    - name: Set up pnpm
+      uses: pnpm/action-setup@v6.1.0
+
+    - name: Set up NodeJS 24
       uses: actions/setup-node@v7.1.0
       with:
-        node-version: 22
-  
-    - name: Install JS dependencies
-      run: |
-        npm i -g pnpm@10.33.0
-        pnpm install --frozen-lockfile
-      
-    - name: Build Frontend
-      run: |
-        pnpm run build
+        node-version: 24
+        cache: pnpm
 
-    - name: Set up Rust for static Linux builds
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y musl-tools
-        rustup target add x86_64-unknown-linux-musl
-        rustup component add clippy rustfmt
+    - name: Install JS dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Build Frontend
+      run: pnpm run build
+
+    - name: Upload frontend
+      uses: actions/upload-artifact@v7.0.2
+      with:
+        name: frontend
+        path: dist
+        if-no-files-found: error
+
+  backend:
+    name: Check and build backend
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7.0.1
+
+    # ring compiles C code for the musl target.
+    - name: Install musl tools
+      run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+    # Installs the toolchain, components and target pinned in backend/rust-toolchain.toml.
+    - name: Install Rust toolchain
+      run: rustup toolchain install
+
+    - name: Restore Rust cache
+      uses: Swatinem/rust-cache@v2.9.2
+      with:
+        workspaces: backend
 
     - name: Check Backend
       run: |
-        cargo fmt --check --manifest-path backend/Cargo.toml
-        cargo clippy --locked --all-targets --manifest-path backend/Cargo.toml -- -D warnings
-        cargo test --locked --manifest-path backend/Cargo.toml
+        cargo fmt --check
+        cargo clippy --locked --all-targets -- -D warnings
+        cargo test --locked
 
     - name: Build Backend
-      run: cargo build --release --locked --target x86_64-unknown-linux-musl --manifest-path backend/Cargo.toml
+      run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+    - name: Upload backend
+      uses: actions/upload-artifact@v7.0.2
+      with:
+        name: backend
+        path: backend/target/x86_64-unknown-linux-musl/release/backend
+        if-no-files-found: error
+
+  package:
+    name: Package SDH-CSSLoader for Decky
+    needs: [frontend, backend]
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7.0.1
+
+    - name: Download frontend
+      uses: actions/download-artifact@v8.0.2
+      with:
+        name: frontend
+        path: dist
+
+    - name: Download backend
+      uses: actions/download-artifact@v8.0.2
+      with:
+        name: backend
+        path: bin
 
     - name: Package Release
       run: |
@@ -54,9 +107,10 @@ jobs:
         mkdir -p upload/SDH-CssLoader/bin
         cp *.json LICENSE README.md upload/SDH-CssLoader/
         cp -r dist upload/SDH-CssLoader/
-        cp backend/target/x86_64-unknown-linux-musl/release/backend upload/SDH-CssLoader/bin/backend
+        install -m 755 bin/backend upload/SDH-CssLoader/bin/backend
         cd upload
-        zip -qr "../SDH-CssLoader-$version.zip" SDH-CssLoader
+        # The source map is about 13 MB and is only useful for debugging.
+        zip -qr "../SDH-CssLoader-$version.zip" SDH-CssLoader -x '*.map'
 
     - name: Upload package artifact
       uses: actions/upload-artifact@v7.0.2
@@ -68,7 +122,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build]
+    needs: [package]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -82,8 +136,8 @@ jobs:
     - name: Download release assets
       uses: actions/download-artifact@v8.0.2
       with:
+        name: SDH-CSSLoader-Decky
         path: release-assets
-        merge-multiple: true
 
     - name: Publish release
       env:
@@ -91,6 +145,10 @@ jobs:
         GH_REPO: ${{ github.repository }}
       run: |
         git for-each-ref --format='%(contents)' "$GITHUB_REF" > release-notes.md
+        prerelease=()
+        if [[ "$GITHUB_REF_NAME" == *-rc.* ]]; then
+          prerelease=(--prerelease)
+        fi
         gh release create "$GITHUB_REF_NAME" release-assets/* \
           --verify-tag --title "CSS Loader $GITHUB_REF_NAME" \
-          --notes-file release-notes.md
+          --notes-file release-notes.md "${prerelease[@]}"

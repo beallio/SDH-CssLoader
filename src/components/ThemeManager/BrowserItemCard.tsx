@@ -1,13 +1,13 @@
 import { FC } from "react";
 import { useCssLoaderState } from "../../state";
 import { Theme } from "../../ThemeTypes";
-import { Focusable, Navigation } from "decky-frontend-lib";
+import { Focusable, Navigation } from "@decky/ui";
 import { AiOutlineDownload } from "react-icons/ai";
 import { PartialCSSThemeInfo, ThemeQueryRequest } from "../../apiTypes";
 import { FaBullseye, FaDownload, FaStar } from "react-icons/fa";
 import { shortenNumber } from "../../logic/numbers";
 
-const cardWidth = {
+const cardWidth: Record<number, number> = {
   5: 152,
   4: 195,
   3: 260,

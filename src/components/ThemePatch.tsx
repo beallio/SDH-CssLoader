@@ -1,4 +1,4 @@
-import { DropdownItem, PanelSectionRow, SliderField, ToggleField } from "decky-frontend-lib";
+import { DropdownItem, PanelSectionRow, SliderField, ToggleField } from "@decky/ui";
 import { useState, VFC } from "react";
 import * as python from "../python";
 import { useCssLoaderState } from "../state";

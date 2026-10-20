@@ -1,35 +1,19 @@
-// Code from https://github.com/NGnius/PowerTools/blob/dev/src/python.ts
-import { ServerAPI } from "decky-frontend-lib";
+import { call, fetchNoCors, toaster } from "@decky/api";
 import { CssLoaderState } from "./state";
 import { Theme, ThemeError, isTheme, isThemeError } from "./ThemeTypes";
 import { bulkThemeUpdateCheck } from "./logic/bulkThemeUpdateCheck";
 
-export var server: ServerAPI | undefined = undefined;
 export var globalState: CssLoaderState | undefined = undefined;
 
-export function setServer(s: ServerAPI) {
-  server = s;
-}
 export function setStateClass(s: CssLoaderState): void {
   globalState = s;
 }
 
 type BackendResult<T> = { success: true; result: T } | { success: false; result: string };
-type DeckyBackend = { call: (method: string, ...args: unknown[]) => Promise<unknown> };
-declare global {
-  interface Window {
-    __DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit: {
-      connect: (version: number, pluginName: string) => DeckyBackend;
-    };
-  }
-}
-let backend: DeckyBackend | undefined;
 
-// The fork's native backend refuses legacy callPluginMethod calls; use the API v1 positional route.
 export async function callBackend(method: string, ...args: unknown[]): Promise<BackendResult<unknown>> {
-  backend ??= window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit.connect(1, "CSS Loader");
   try {
-    return { success: true, result: await backend.call(method, ...args) };
+    return { success: true, result: await call<unknown[], unknown>(method, ...args) };
   } catch (e) {
     return { success: false, result: String(e) };
   }
@@ -58,10 +42,6 @@ const isLoadErrors = (value: unknown): value is { fails: ThemeError[] } =>
   "fails" in value &&
   Array.isArray(value.fails) &&
   value.fails.every(isThemeError);
-
-export async function openFilePicker(path: string) {
-  return await server!.openFilePicker(path, true);
-}
 
 export function fetchThemePath() {
   return callBackendAs(isString, "fetch_theme_path");
@@ -188,18 +168,16 @@ export function setComponentOfThemePatch(
 }
 
 export function toast(title: string, message: string) {
-  // This is a weirdo self-invoking function, but it works.
-  return (() => {
-    try {
-      return server?.toaster.toast({
-        title: title,
-        body: message,
-        duration: 8000,
-      });
-    } catch (e) {
-      console.log("CSSLoader Toaster Error", e);
-    }
-  })();
+  try {
+    return toaster.toast({
+      title: title,
+      body: message,
+      duration: 8000,
+    });
+  } catch (e) {
+    console.log("CSSLoader Toaster Error", e);
+    return undefined;
+  }
 }
 
 export function downloadThemeFromUrl(themeId: string): Promise<any> {
@@ -241,25 +219,17 @@ export function dummyFunction() {
 }
 
 export function genericGET(fetchUrl: string, authToken?: string | undefined) {
-  return server!
-    .fetchNoCors<Response>(`${fetchUrl}`, {
-      method: "GET",
-      headers: authToken
-        ? {
-            Authorization: `Bearer ${authToken}`,
-          }
-        : {},
-    })
-    .then((deckyRes) => {
-      if (deckyRes.success) {
-        return deckyRes.result;
-      }
-      throw new Error(`Fetch not successful!`);
-    })
+  return fetchNoCors(fetchUrl, {
+    method: "GET",
+    headers: authToken
+      ? {
+          Authorization: `Bearer ${authToken}`,
+        }
+      : {},
+  })
     .then((res) => {
-      if (res.status >= 200 && res.status <= 300 && res.body) {
-        // @ts-ignore
-        return JSON.parse(res.body || "");
+      if (res.ok) {
+        return res.json();
       }
       throw new Error(`Res not OK!, code ${res.status}`);
     })

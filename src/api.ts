@@ -1,15 +1,11 @@
-import { ServerAPI } from "decky-frontend-lib";
+import { fetchNoCors } from "@decky/api";
 import { CssLoaderState } from "./state";
 import { toast, storeWrite, downloadThemeFromUrl, reloadBackend } from "./python";
 import { ThemeQueryRequest } from "./apiTypes";
 import { generateParamStr } from "./logic";
 
-var server: ServerAPI | undefined = undefined;
 var globalState: CssLoaderState | undefined = undefined;
 
-export function setServer(s: ServerAPI): void {
-  server = s;
-}
 export function setStateClass(s: CssLoaderState): void {
   globalState = s;
 }
@@ -30,22 +26,12 @@ export async function logInWithShortToken(
   const shortTokenValue = shortTokenInterimValue ? shortTokenInterimValue : apiShortToken;
   const setGlobalState = globalState!.setGlobalState.bind(globalState);
   if (shortTokenValue.length === 12) {
-    return server!
-      .fetchNoCors(`${apiUrl}/auth/authenticate_token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: shortTokenValue }),
-      })
-      .then((deckyRes) => {
-        if (deckyRes.success) {
-          return deckyRes.result;
-        }
-        throw new Error(`Fetch not successful!`);
-      })
-      .then((res) => {
-        // @ts-ignore
-        return JSON.parse(res?.body || "");
-      })
+    return fetchNoCors(`${apiUrl}/auth/authenticate_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: shortTokenValue }),
+    })
+      .then((res) => res.json())
       .then((json) => {
         if (json) {
           return json;
@@ -90,23 +76,15 @@ export function refreshToken(onError: () => void = () => {}): Promise<string | u
   if (new Date().valueOf() < apiTokenExpireDate) {
     return Promise.resolve(apiFullToken);
   }
-  return server!
-    .fetchNoCors<Response>(`${apiUrl}/auth/refresh_token`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiFullToken}`,
-      },
-    })
-    .then((deckyRes) => {
-      if (deckyRes.success) {
-        return deckyRes.result;
-      }
-      throw new Error(`Fetch not successful!`);
-    })
+  return fetchNoCors(`${apiUrl}/auth/refresh_token`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiFullToken}`,
+    },
+  })
     .then((res) => {
-      if (res.status >= 200 && res.status <= 300 && res.body) {
-        // @ts-ignore
-        return JSON.parse(res.body || "");
+      if (res.ok) {
+        return res.json();
       }
       throw new Error(`Res not OK!, code ${res.status}`);
     })
@@ -136,25 +114,17 @@ export async function genericGET(
 ) {
   const { apiUrl } = globalState!.getPublicState();
   function doTheFetching(authToken: string | undefined = undefined) {
-    return server!
-      .fetchNoCors<Response>(`${apiUrl}${fetchPath}`, {
-        method: "GET",
-        headers: authToken
-          ? {
-              Authorization: `Bearer ${authToken}`,
-            }
-          : {},
-      })
-      .then((deckyRes) => {
-        if (deckyRes.success) {
-          return deckyRes.result;
-        }
-        throw new Error(`Fetch not successful!`);
-      })
+    return fetchNoCors(`${apiUrl}${fetchPath}`, {
+      method: "GET",
+      headers: authToken
+        ? {
+            Authorization: `Bearer ${authToken}`,
+          }
+        : {},
+    })
       .then((res) => {
-        if (res.status >= 200 && res.status <= 300 && res.body) {
-          // @ts-ignore
-          return JSON.parse(res.body || "");
+        if (res.ok) {
+          return res.json();
         }
         throw new Error(`Res not OK!, code ${res.status}`);
       })
@@ -224,22 +194,14 @@ export function getThemes(
 
 export function toggleStar(themeId: string, isStarred: boolean, authToken: string) {
   const { apiUrl } = globalState!.getPublicState();
-  return server!
-    .fetchNoCors<Response>(`${apiUrl}/users/me/stars/${themeId}`, {
-      method: isStarred ? "DELETE" : "POST",
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-      },
-    })
-    .then((deckyRes) => {
-      if (deckyRes.success) {
-        return deckyRes.result;
-      }
-      throw new Error(`Fetch not successful!`);
-    })
+  return fetchNoCors(`${apiUrl}/users/me/stars/${themeId}`, {
+    method: isStarred ? "DELETE" : "POST",
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+    },
+  })
     .then((res) => {
-      if (res.status >= 200 && res.status <= 300) {
-        // @ts-ignore
+      if (res.ok) {
         return true;
       }
       throw new Error(`Res not OK!, code ${res.status}`);
