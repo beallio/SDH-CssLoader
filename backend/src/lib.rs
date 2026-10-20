@@ -1613,9 +1613,9 @@ async fn fetch_class_mappings(backend: &Backend, force: bool) -> bool {
             || beta_override == "1"
             || beta_override == "true"
         {
-            "https://api.deckthemes.com/beta.json"
+            "https://beallio.github.io/steamui-watch/beta.json"
         } else {
-            "https://api.deckthemes.com/stable.json"
+            "https://beallio.github.io/steamui-watch/stable.json"
         };
     log::info!("Fetching CSS mappings from {translations_url}");
     let client = match reqwest::Client::builder()

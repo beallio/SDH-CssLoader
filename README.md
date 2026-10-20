@@ -17,6 +17,7 @@ Compared with the standard CSS Loader 2.1.4:
 - Steam pop-up windows keep their themes after Decky Loader restarts.
 - After the plugin restarts or updates, turning a theme off works right away. The Python version leaves the old styles in place until you reset themes.
 - Themes load in name order, so the result is the same every time.
+- Theme class-name translations come from [steamui-watch](https://github.com/beallio/steamui-watch), which checks Valve's stable and beta releases each day. The standard CSS Loader uses DeckThemes' mapping service.
 
 ## Performance
 
