@@ -906,7 +906,11 @@ async fn load_core(
     core.ordered_injects.clear();
     let mappings = default_mappings();
     core.errors.clear();
-    let entries = fs::read_dir(&core.root).map_err(|e| e.to_string())?;
+    let mut entries: Vec<_> = fs::read_dir(&core.root)
+        .map_err(|e| e.to_string())?
+        .collect();
+    // read_dir order depends on the filesystem; equal-priority themes must inject in a stable order.
+    entries.sort_by_key(|entry| entry.as_ref().ok().map(fs::DirEntry::file_name));
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
