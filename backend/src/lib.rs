@@ -35,6 +35,8 @@ struct Core {
     errors: Vec<Value>,
     class_mappings: HashMap<String, String>,
     last_mapping_fetch: Option<Instant>,
+    /// URL and ETag of the mappings now in `class_mappings`.
+    mapping_etag: Option<(String, String)>,
     busy: bool,
     server_enabled: bool,
     watcher: Option<RecommendedWatcher>,
@@ -80,6 +82,7 @@ impl Backend {
                 errors: Vec::new(),
                 class_mappings: HashMap::new(),
                 last_mapping_fetch: None,
+                mapping_etag: None,
                 busy: false,
                 server_enabled: false,
                 watcher: None,
@@ -106,6 +109,7 @@ impl Backend {
                 errors: Vec::new(),
                 class_mappings: HashMap::new(),
                 last_mapping_fetch: None,
+                mapping_etag: None,
                 busy: false,
                 server_enabled: false,
                 watcher: None,
@@ -1590,7 +1594,7 @@ async fn fetch_mappings_periodically(backend: Weak<Backend>) {
 
 async fn fetch_class_mappings(backend: &Backend, force: bool) -> bool {
     let _fetch = backend.mapping_fetch.lock().await;
-    let (root, beta_override, steam, last_fetch) = {
+    let (root, beta_override, steam, last_fetch, etag) = {
         let mut core = backend.core.lock().await;
         if force {
             core.last_mapping_fetch = None;
@@ -1600,6 +1604,7 @@ async fn fetch_class_mappings(backend: &Backend, force: bool) -> bool {
             store_read(&core.root, "beta_translations").unwrap_or_default(),
             core.steam.clone(),
             core.last_mapping_fetch,
+            core.mapping_etag.clone(),
         )
     };
     if !mapping_refresh_due(last_fetch, Instant::now()) {
@@ -1648,28 +1653,42 @@ async fn fetch_class_mappings(backend: &Backend, force: bool) -> bool {
         }
     };
     let fetched = async {
-        let response = client
-            .get(translations_url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut request = client.get(translations_url);
+        if let Some((_, etag)) = etag.as_ref().filter(|(url, _)| url == translations_url) {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(None);
+        }
         if response.status() != reqwest::StatusCode::OK {
             return Err(format!("status {}", response.status()));
         }
+        let etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| (translations_url.to_owned(), value.to_owned()));
         let content = response.bytes().await.map_err(|e| e.to_string())?;
         if content.iter().all(u8::is_ascii_whitespace) {
             return Err("Empty response".to_owned());
         }
-        save_class_mappings(&root, &content)
+        save_class_mappings(&root, &content).map(|mappings| Some((mappings, etag)))
     }
     .await;
     match fetched {
-        Ok(mappings) => {
+        Ok(None) => {
+            backend.core.lock().await.last_mapping_fetch = Some(Instant::now());
+            log::info!("CSS translations on the server are unchanged");
+            true
+        }
+        Ok(Some((mappings, etag))) => {
             let changed = {
                 let mut core = backend.core.lock().await;
                 let changed = core.class_mappings != mappings;
                 core.class_mappings = mappings;
                 core.last_mapping_fetch = Some(Instant::now());
+                core.mapping_etag = etag;
                 changed
             };
             log::info!("Fetched css translations from server");
