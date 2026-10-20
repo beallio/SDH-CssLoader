@@ -1,4 +1,3 @@
-import { Url } from "url";
 import { APIBlob } from "./BlobTypes";
 
 export interface UserInfo {

@@ -40,7 +40,7 @@ interface PublicCssLoaderState {
   apiMeData: AccountData | undefined;
   // This is a unix timestamp
   nextUpdateCheckTime: number;
-  updateCheckTimeout: NodeJS.Timeout | undefined;
+  updateCheckTimeout: number | undefined;
 
   unminifyModeOn: boolean;
   navPatchInstance: Patch | undefined;
@@ -67,7 +67,7 @@ export class CssLoaderState {
   private currentTab: string = "ThemeBrowser";
   private forceScrollBackUp: boolean = false;
   private nextUpdateCheckTime: number = 0;
-  private updateCheckTimeout: NodeJS.Timeout | undefined = undefined;
+  private updateCheckTimeout: number | undefined = undefined;
   private navPatchInstance: Patch | undefined = undefined;
 
   private updateStatuses: UpdateStatus[] = [];
