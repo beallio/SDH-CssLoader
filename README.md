@@ -7,6 +7,16 @@ This version replaces the plugin's Python backend with a native program. It work
 
 Install the `SDH-CssLoader-<version>.zip` package with Decky Loader's local file installer. Do not use GitHub's source-code ZIP. Your installed themes and settings stay in place.
 
+## What's changed
+
+Compared with the standard CSS Loader 2.1.4:
+
+- The plugin's background program is rewritten in Rust, a faster language that uses less memory. The plugin looks and works the same.
+- Themes are applied as soon as a Steam page opens or reloads, instead of on a timer.
+- If Steam removes or changes a theme's styling, the plugin repairs it right away instead of checking every few seconds.
+- Steam pop-up windows keep their themes after Decky Loader restarts.
+- Themes load in name order, so the result is the same every time.
+
 ## Performance
 
 We compared this version with the standard Python version on a Steam Deck virtual machine:
