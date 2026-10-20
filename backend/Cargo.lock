@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "css-loader-backend"
-version = "2.1.4-rust.1-rc.2"
+version = "2.1.4-rust.1-rc.3"
 dependencies = [
  "axum",
  "decky-plugin",
