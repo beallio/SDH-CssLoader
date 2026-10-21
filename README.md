@@ -60,10 +60,6 @@ The plugin does not make Steam itself scroll or move more smoothly. The time Ste
 
 These numbers come from a virtual machine, not a real Steam Deck. Your results can be different.
 
-## Troubleshooting
-
-**An update from a ZIP file does not finish (standard Decky Loader).** The standard Decky Loader cannot replace a running plugin when the ZIP file name is different from the plugin name. The old version keeps running. To fix it, rename the file to `CSS Loader.zip` and install it again. You can also uninstall CSS Loader first and then install the ZIP. Your themes and settings stay in place in both cases. Updates from the plugin store are not affected.
-
 ## Documentation
 
 
