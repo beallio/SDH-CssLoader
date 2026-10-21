@@ -1,7 +1,7 @@
 # CSS Loader
 Dynamically loads CSS files from storage and reloads alongside Steam UI.
 
-This version replaces the plugin's Python backend with a native program. It works only with [beallio's Decky Loader fork](https://github.com/beallio/decky-loader). The standard Decky Loader cannot run it, and there is no Windows version.
+This version replaces the plugin's Python backend with a native program. It works with the standard Decky Loader and with [beallio's Decky Loader fork](https://github.com/beallio/decky-loader). The fork runs the native program directly. The standard Decky Loader starts it through a small Python file in the package (`main.py`). There is no Windows version.
 
 ## Install
 
@@ -21,7 +21,7 @@ Compared with the standard CSS Loader 2.1.4:
 
 ## Performance
 
-We compared this version with the standard Python version 2.1.4 on a Steam Deck virtual machine on 19 October 2026. We tested each version twice, taking turns between them, with the same themes.
+We compared this version with the standard Python version 2.1.4 on a Steam Deck virtual machine with beallio's Decky Loader fork on 19 October 2026. We tested each version twice, taking turns between them, with the same themes.
 
 | What we measured | Python version | This version |
 |---|---:|---:|
