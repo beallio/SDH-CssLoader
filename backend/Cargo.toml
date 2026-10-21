@@ -1,6 +1,6 @@
 [package]
 name = "css-loader-backend"
-version = "2.1.4-rust.1-rc.3"
+version = "2.1.4-rust.1-rc.4"
 edition = "2024"
 publish = false
 
