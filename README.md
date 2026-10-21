@@ -25,20 +25,20 @@ We compared this version with the standard Python version 2.1.4 on a Steam Deck 
 
 ### With the standard Decky Loader
 
-Tested with version 2.1.4-rust.1-rc.6 and Decky Loader 3.3.0 on 21 October 2026.
+Tested with version 2.1.4-rust.1-rc.7 and Decky Loader 3.3.0 on 21 October 2026.
 
 | What we measured | Python version | This version |
 |---|---:|---:|
 | Theme appears on a newly opened Steam page | 0.6–4.7 s | 0.1–0.2 s |
-| Theme appears on a reloaded Steam page | 0.8–2.9 s | 0.01–0.02 s |
+| Theme appears on a reloaded Steam page | 1.8–2.9 s | 0.01–0.02 s |
 | Background checks inside each Steam page | 20 per minute | none |
-| Reset themes | about 80–170 ms | about 60–150 ms |
-| Memory use | about 69–72 MB | about 56–58 MB |
-| CPU time used while idle for 2 minutes | about 0.10 s | about 0.01 s |
-| CPU time used during 105 s of browsing | about 0.20 s | about 0.05 s |
+| Reset themes | about 100–160 ms | about 70–170 ms |
+| Memory use | about 61–65 MB | about 59 MB |
+| CPU time used while idle for 2 minutes | about 0.10 s | about 0.01–0.02 s |
+| CPU time used during 105 s of browsing | about 0.20 s | about 0.04–0.06 s |
 | Screen smoothness while browsing (time per frame) | about 13 ms | about 13 ms |
 
-The standard Decky Loader keeps a small Python helper running next to the native program. Most of this version's memory use is that helper.
+Memory use is about the same, because the standard Decky Loader keeps a small Python helper running next to the native program. Most of this version's memory use is that helper.
 
 ### With beallio's Decky Loader fork
 
