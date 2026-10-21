@@ -270,7 +270,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 [[package]]
 name = "decky-plugin"
 version = "0.1.0"
-source = "git+https://github.com/beallio/decky-loader#4eb1b524662a5abc12371c5c08919ccc9704132a"
+source = "git+https://github.com/beallio/decky-loader#a88aca6c6c24f409b212ba50a6beb0784d169477"
 dependencies = [
  "libc",
  "log",

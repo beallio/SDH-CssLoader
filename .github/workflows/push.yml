@@ -105,7 +105,7 @@ jobs:
           exit 1
         fi
         mkdir -p upload/SDH-CssLoader/bin
-        cp *.json LICENSE README.md upload/SDH-CssLoader/
+        cp *.json main.py LICENSE README.md upload/SDH-CssLoader/
         cp -r dist upload/SDH-CssLoader/
         install -m 755 bin/backend upload/SDH-CssLoader/bin/backend
         cd upload
