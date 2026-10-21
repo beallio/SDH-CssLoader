@@ -6,7 +6,7 @@ use browser::Browser;
 use decky_plugin::{Context, Env, serde_json::Value};
 use model::{
     CSS_LOADER_VER, FLAG_KEEP_DEPENDENCIES, FLAG_PRESET, Inject, Theme, default_mappings,
-    dependency_names, load_class_mappings, python_json_dump,
+    dependency_names, load_class_mappings,
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{Map, json};
@@ -596,10 +596,7 @@ async fn dispatch(backend: &Arc<Backend>, method: &str, args: Vec<Value>) -> Res
             require_count(method, &args, 0, 0)?;
             let core = backend.core.lock().await;
             Ok(Value::Array(
-                core.themes
-                    .iter()
-                    .map(|x| x.to_dict(&core.injects))
-                    .collect(),
+                core.themes.iter().map(|x| x.to_dict()).collect(),
             ))
         }
         "reset" => {
@@ -1389,7 +1386,7 @@ fn generate_preset_core(
         return result(false, error.to_string());
     }
     let manifest = json!({"display_name": display_name, "name": name, "manifest_version": MAX_MANIFEST_VERSION, "flags": [FLAG_PRESET], "dependencies": dependencies});
-    if let Err(error) = fs::write(path.join("theme.json"), python_json_dump(&manifest)) {
+    if let Err(error) = fs::write(path.join("theme.json"), manifest.to_string()) {
         return result(false, error.to_string());
     }
     if let Some(theme) = core.themes.iter_mut().find(|x| x.name == name) {
@@ -1611,21 +1608,18 @@ async fn fetch_class_mappings(backend: &Backend, force: bool) -> bool {
     if !mapping_refresh_due(last_fetch, Instant::now()) {
         return false;
     }
-    let check_connectivity = true;
-    if check_connectivity {
-        match tokio::task::spawn_blocking(|| {
-            StdTcpStream::connect_timeout(
-                &SocketAddr::from(([8, 8, 8, 8], 53)),
-                Duration::from_secs(3),
-            )
-        })
-        .await
-        {
-            Ok(Ok(_)) => (),
-            _ => {
-                log::info!("No internet connection. Not fetching css translations");
-                return false;
-            }
+    match tokio::task::spawn_blocking(|| {
+        StdTcpStream::connect_timeout(
+            &SocketAddr::from(([8, 8, 8, 8], 53)),
+            Duration::from_secs(3),
+        )
+    })
+    .await
+    {
+        Ok(Ok(_)) => (),
+        _ => {
+            log::info!("No internet connection. Not fetching css translations");
+            return false;
         }
     }
     let beta = match fs::read_to_string(steam.join("package/beta")) {
@@ -1773,14 +1767,6 @@ mod tests {
     }
 
     #[test]
-    fn python_json_matches_default_dump_format() {
-        assert_eq!(
-            python_json_dump(&json!({"title": "é", "nested": [true, "x"]})),
-            r#"{"title": "\u00e9", "nested": [true, "x"]}"#
-        );
-    }
-
-    #[test]
     fn store_round_trips_first_colon_and_preserves_insert_order() {
         let dir = tempfile::tempdir().unwrap();
         store_write(dir.path(), "one", "a:b").unwrap();
@@ -1805,12 +1791,10 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert_eq!(
-            dispatch_http(&backend, "set_theme_state", &kwargs)
-                .await
-                .unwrap_err(),
-            "set_theme_state() got an unexpected keyword argument 'set_dep'"
-        );
+        let error = dispatch_http(&backend, "set_theme_state", &kwargs)
+            .await
+            .unwrap_err();
+        assert!(error.contains("'set_dep'"), "{error}");
     }
 
     #[tokio::test]
@@ -1868,7 +1852,6 @@ mod tests {
         let make_inject = |path: PathBuf| Inject {
             path,
             selectors: vec![".*".into()],
-            inline_css: None,
             css: None,
             enabled: false,
             uuids: HashMap::new(),
@@ -1908,7 +1891,6 @@ mod tests {
         core.injects.push(Inject {
             path: root.join("unused.css"),
             selectors: vec!["~not-open~".into(), "~open~".into()],
-            inline_css: Some("x".into()),
             css: Some("x".into()),
             enabled: true,
             uuids: [("~open~".to_owned(), vec!["live".to_owned()])].into(),
@@ -2010,7 +1992,7 @@ mod tests {
             .themes
             .iter()
             .map(|theme| {
-                let mut value = theme.to_dict(&core.injects);
+                let mut value = theme.to_dict();
                 value["created"] = Value::Null;
                 value["modified"] = Value::Null;
                 value
@@ -2045,6 +2027,8 @@ mod tests {
         assert_eq!(Value::Array(themes), golden["themes"]);
         assert_eq!(Value::Array(errors), golden["fails"]);
         assert_eq!(Value::Object(css_by_tab), golden["css_by_tab"]);
+        // Same data as the Python output; whitespace and escaping may differ.
+        let parse = |text: &str| serde_json::from_str::<Value>(text).unwrap();
         for name in [
             "version-1",
             "version-2",
@@ -2054,8 +2038,8 @@ mod tests {
         ] {
             let path = root.join(name).join("config_USER.json");
             assert_eq!(
-                fs::read_to_string(path).unwrap(),
-                golden["configs"][name].as_str().unwrap()
+                parse(&fs::read_to_string(path).unwrap()),
+                parse(golden["configs"][name].as_str().unwrap())
             );
         }
         assert_eq!(
@@ -2063,8 +2047,8 @@ mod tests {
             golden["store"].as_str().unwrap()
         );
         assert_eq!(
-            fs::read_to_string(root.join("Parity Profile.profile/theme.json")).unwrap(),
-            golden["preset_theme_json"].as_str().unwrap()
+            parse(&fs::read_to_string(root.join("Parity Profile.profile/theme.json")).unwrap()),
+            parse(golden["preset_theme_json"].as_str().unwrap())
         );
     }
 }

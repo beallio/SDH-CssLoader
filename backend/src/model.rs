@@ -22,7 +22,6 @@ pub const FLAG_PRESET: &str = "PRESET";
 pub struct Inject {
     pub path: PathBuf,
     pub selectors: Vec<String>,
-    pub inline_css: Option<String>,
     pub css: Option<String>,
     pub enabled: bool,
     pub uuids: HashMap<String, Vec<String>>,
@@ -34,7 +33,6 @@ impl Inject {
         Self {
             path,
             selectors,
-            inline_css: inline_css.clone(),
             css: inline_css,
             enabled: false,
             uuids,
@@ -419,9 +417,8 @@ impl Theme {
         self.display_name.as_deref().unwrap_or(&self.name)
     }
 
-    pub fn to_dict(&self, arena: &[Inject]) -> Value {
+    pub fn to_dict(&self) -> Value {
         let dependencies = dependency_names(&self.dependencies);
-        let _ = arena;
         json!({
             "id": self.id, "name": self.name, "display_name": self.get_display_name(),
             "version": self.version, "author": self.author, "enabled": self.enabled,
@@ -447,7 +444,7 @@ impl Theme {
         } else {
             "config_USER.json"
         });
-        fs::write(&file, python_json_dump(&self.config_value())).map_err(|e| e.to_string())?;
+        fs::write(&file, self.config_value().to_string()).map_err(|e| e.to_string())?;
         self.modified = Some(now_seconds());
         Ok(())
     }
@@ -877,70 +874,6 @@ pub fn dependency_names(dependencies: &Value) -> Vec<String> {
         Value::String(value) => value.chars().map(|x| x.to_string()).collect(),
         _ => Vec::new(),
     }
-}
-
-pub fn python_json_dump(value: &Value) -> String {
-    fn write(value: &Value, out: &mut String) {
-        match value {
-            Value::Null => out.push_str("null"),
-            Value::Bool(x) => out.push_str(if *x { "true" } else { "false" }),
-            Value::Number(x) => out.push_str(&x.to_string()),
-            Value::String(x) => write_string(x, out),
-            Value::Array(values) => {
-                out.push('[');
-                for (i, x) in values.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    write(x, out);
-                }
-                out.push(']');
-            }
-            Value::Object(values) => {
-                out.push('{');
-                for (i, (key, val)) in values.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    write_string(key, out);
-                    out.push_str(": ");
-                    write(val, out);
-                }
-                out.push('}');
-            }
-        }
-    }
-    fn write_string(value: &str, out: &mut String) {
-        out.push('"');
-        for character in value.chars() {
-            match character {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\u{08}' => out.push_str("\\b"),
-                '\u{0c}' => out.push_str("\\f"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c if c <= '\u{1f}' => out.push_str(&format!("\\u{:04x}", c as u32)),
-                c if c as u32 > 0x7f => {
-                    let code = c as u32;
-                    if code <= 0xffff {
-                        out.push_str(&format!("\\u{code:04x}"));
-                    } else {
-                        let code = code - 0x10000;
-                        let high = 0xd800 + (code >> 10);
-                        let low = 0xdc00 + (code & 0x3ff);
-                        out.push_str(&format!("\\u{high:04x}\\u{low:04x}"));
-                    }
-                }
-                c => out.push(c),
-            }
-        }
-        out.push('"');
-    }
-    let mut output = String::new();
-    write(value, &mut output);
-    output
 }
 
 fn required_string(value: &Value, key: &str) -> Result<String, String> {

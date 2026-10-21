@@ -1,4 +1,4 @@
-use crate::{Backend, model::python_json_dump};
+use crate::Backend;
 use futures_util::{SinkExt, StreamExt};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
@@ -168,7 +168,7 @@ fn preload_script(styles: &IndexMap<String, String>) -> String {
         .collect::<Vec<_>>();
     format!(
         "{};\n{}",
-        PREPAINT_JS.replace("$STYLES", &python_json_dump(&json!(styles))),
+        PREPAINT_JS.replace("$STYLES", &json!(styles).to_string()),
         WATCHER_JS
     )
 }
@@ -956,7 +956,7 @@ impl Browser {
             .iter()
             .map(|(id, css)| json!({"id": id, "css": css}))
             .collect::<Vec<_>>();
-        let js_data = python_json_dump(&json!({"add": add, "remove": &removes}));
+        let js_data = json!({"add": add, "remove": &removes}).to_string();
         let extra = if remove_all_first {
             "expected.clear(); document.querySelectorAll('.css-loader-style').forEach(x => x.remove());"
         } else {
