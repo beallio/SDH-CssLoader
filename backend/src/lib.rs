@@ -13,7 +13,7 @@ use serde_json::{Map, json};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{Read, Write},
+    io::Write,
     net::{SocketAddr, TcpStream as StdTcpStream},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, Weak},
@@ -465,20 +465,6 @@ impl Backend {
         generate_preset_core(&mut core, name, dependencies)
     }
 
-    async fn upload_theme(&self, name: &str, base_url: &str, token: &str) -> Value {
-        let theme_path = {
-            let core = self.core.lock().await;
-            let Some(theme) = core.themes.iter().find(|x| x.name == name) else {
-                return result(false, format!("Could not find theme {name}"));
-            };
-            theme.theme_path.clone()
-        };
-        match upload_theme_archive(&theme_path, base_url, token).await {
-            Ok(data) => json!({"success": true, "message": data}),
-            Err(error) => result(false, &error),
-        }
-    }
-
     async fn download_theme(&self, id: &str, base_url: &str) -> Result<Value, String> {
         let (root, local, no_deps) = {
             let core = self.core.lock().await;
@@ -726,16 +712,6 @@ async fn dispatch(backend: &Arc<Backend>, method: &str, args: Vec<Value>) -> Res
                 .generate_preset(string_arg(method, &args, 0, "name")?, Some(&selected))
                 .await)
         }
-        "upload_theme" => {
-            require_count(method, &args, 3, 3)?;
-            Ok(backend
-                .upload_theme(
-                    string_arg(method, &args, 0, "name")?,
-                    string_arg(method, &args, 1, "base_url")?,
-                    string_arg(method, &args, 2, "bearer_token")?,
-                )
-                .await)
-        }
         _ => Err(format!("Plugin has no method {method}")),
     }
 }
@@ -786,11 +762,6 @@ pub async fn dispatch_http(
         "generate_preset_theme_from_theme_names" => &[
             ("name", Value::Null, true),
             ("themeNames", Value::Null, true),
-        ],
-        "upload_theme" => &[
-            ("name", Value::Null, true),
-            ("base_url", Value::Null, true),
-            ("bearer_token", Value::Null, true),
         ],
         _ => return Err(format!("Plugin has no method {method}")),
     };
@@ -1394,72 +1365,6 @@ fn generate_preset_core(
         theme.dependencies = manifest["dependencies"].clone();
     }
     result(true, "Success")
-}
-
-fn create_zip_directory(
-    zip: &mut zip::ZipWriter<fs::File>,
-    root: &Path,
-    directory: &Path,
-) -> Result<(), String> {
-    use zip::write::SimpleFileOptions;
-    let entries = fs::read_dir(directory).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.is_dir() {
-            create_zip_directory(zip, root, &path)?;
-            continue;
-        }
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .replace('\\', "/");
-        zip.start_file(
-            relative,
-            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
-        )
-        .map_err(|e| e.to_string())?;
-        let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        zip.write_all(&bytes).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-async fn upload_theme_archive(
-    theme_path: &Path,
-    base_url: &str,
-    token: &str,
-) -> Result<Value, String> {
-    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let archive_path = temp.path().join("theme.zip");
-    let file = fs::File::create(&archive_path).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(file);
-    create_zip_directory(&mut zip, theme_path, theme_path)?;
-    zip.finish().map_err(|e| e.to_string())?;
-    let bytes = fs::read(archive_path).map_err(|e| e.to_string())?;
-    let url = format!("{}blobs", ensure_slash(base_url));
-    let client = reqwest::Client::builder()
-        .user_agent(format!("SDH-CSSLoader/{CSS_LOADER_VER}"))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let form = reqwest::multipart::Form::new().part(
-        "file",
-        reqwest::multipart::Part::bytes(bytes).file_name("theme.zip"),
-    );
-    let response = client
-        .post(url)
-        .bearer_auth(token)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if response.status() != reqwest::StatusCode::OK {
-        return Err(format!("Invalid status code {}", response.status()));
-    }
-    response.json().await.map_err(|e| e.to_string())
 }
 
 async fn install_theme(

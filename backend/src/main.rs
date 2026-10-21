@@ -38,7 +38,6 @@ async fn main() -> std::io::Result<()> {
         .method("generate_preset_theme_from_theme_names", |c, a| {
             rpc(c, a, "generate_preset_theme_from_theme_names")
         })
-        .method("upload_theme", |c, a| rpc(c, a, "upload_theme"))
         .on_main(|context| async move { css_loader_backend::run(context).await })
         .run()
         .await

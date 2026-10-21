@@ -25,7 +25,6 @@ const ALLOWED: &[&str] = &[
     "toggle_watch_state",
     "generate_preset_theme",
     "generate_preset_theme_from_theme_names",
-    "upload_theme",
 ];
 
 pub fn start(backend: Weak<Backend>) {
