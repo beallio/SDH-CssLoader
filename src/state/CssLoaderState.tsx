@@ -1,4 +1,4 @@
-import { Patch, SingleDropdownOption } from "@decky/ui";
+import { Patch } from "@decky/ui";
 import { createContext, FC, useContext, useEffect, useState } from "react";
 import {
   AccountData,
@@ -32,7 +32,6 @@ interface PublicCssLoaderState {
   forceScrollBackUp: boolean;
 
   // Api
-  selectedRepo: SingleDropdownOption;
   apiUrl: string;
   apiShortToken: string;
   apiFullToken: string;
@@ -48,7 +47,6 @@ interface PublicCssLoaderState {
   selectedPreset: Theme | undefined;
   localThemeList: Theme[];
   themeErrors: ThemeError[];
-  currentSettingsPageTheme: string | undefined;
   unpinnedThemes: string[];
   isInstalling: boolean;
   currentExpandedTheme: PartialCSSThemeInfo | undefined;
@@ -79,10 +77,6 @@ export class CssLoaderState {
   private apiMeData: AccountData | undefined = undefined;
   private localThemeList: Theme[] = [];
   private themeErrors: ThemeError[] = [];
-  private selectedRepo: SingleDropdownOption = {
-    data: 1,
-    label: "All",
-  };
   private isInstalling: boolean = false;
   private currentExpandedTheme: PartialCSSThemeInfo | undefined = undefined;
   private browserCardSize: number = 3;
@@ -115,7 +109,6 @@ export class CssLoaderState {
     order: "Last Updated",
     search: "",
   };
-  private currentSettingsPageTheme: string | undefined = undefined;
   private unpinnedThemes: string[] = [];
 
   private starredSearchOpts: ThemeQueryRequest = {
@@ -173,14 +166,12 @@ export class CssLoaderState {
       selectedPreset: this.selectedPreset,
       localThemeList: this.localThemeList,
       themeErrors: this.themeErrors,
-      currentSettingsPageTheme: this.currentSettingsPageTheme,
       unpinnedThemes: this.unpinnedThemes,
       isInstalling: this.isInstalling,
       hiddenMotd: this.hiddenMotd,
       unminifyModeOn: this.unminifyModeOn,
 
       navPatchInstance: this.navPatchInstance,
-      selectedRepo: this.selectedRepo,
       currentExpandedTheme: this.currentExpandedTheme,
       browserCardSize: this.browserCardSize,
 

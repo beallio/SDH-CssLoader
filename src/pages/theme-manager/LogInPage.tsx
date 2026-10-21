@@ -3,7 +3,7 @@ import { SiWebauthn } from "react-icons/si";
 import { useEffect, useMemo, useState, VFC } from "react";
 import { logInWithShortToken, logOut } from "../../api";
 import { useCssLoaderState } from "../../state";
-import { enableServer, getServerState, storeWrite } from "../../python";
+import { storeWrite } from "../../python";
 import { disableNavPatch, enableNavPatch } from "../../deckyPatches/NavPatch";
 import { FaArrowRightToBracket } from "react-icons/fa6";
 

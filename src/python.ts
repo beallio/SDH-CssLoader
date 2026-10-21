@@ -59,17 +59,6 @@ export function resolve(promise: Promise<any>, setter: any) {
   })();
 }
 
-export function execute(promise: Promise<any>) {
-  (async function () {
-    let data = await promise;
-    if (data.success) {
-      console.debug("Got executed", data, "promise", promise);
-    } else {
-      console.warn("Execute failed:", data, "promise", promise);
-    }
-  })();
-}
-
 export async function scheduleCheckForUpdates() {
   const setGlobalState = globalState!.setGlobalState.bind(globalState);
   function recursiveCheck() {
@@ -197,12 +186,6 @@ export function storeWrite(key: string, value: string) {
   return callBackend("store_write", key, value);
 }
 
-export function enableServer() {
-  return callBackend("enable_server");
-}
-export function getServerState() {
-  return callBackendAs(isBoolean, "get_server_state");
-}
 
 export function getBackendVersion(): Promise<any> {
   const setGlobalState = globalState!.setGlobalState.bind(globalState);
