@@ -1,6 +1,6 @@
 {
   "name": "SDH-CssLoader",
-  "version": "2.1.4-rust.1-rc.5",
+  "version": "2.1.4-rust.1-rc.6",
   "description": "A css loader",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
