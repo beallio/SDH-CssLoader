@@ -21,7 +21,28 @@ Compared with the standard CSS Loader 2.1.4:
 
 ## Performance
 
-We compared this version with the standard Python version 2.1.4 on a Steam Deck virtual machine with beallio's Decky Loader fork on 19 October 2026. We tested each version twice, taking turns between them, with the same themes.
+We compared this version with the standard Python version 2.1.4 on a Steam Deck virtual machine, with the same themes. We tested each version twice, taking turns between them.
+
+### With the standard Decky Loader
+
+Tested with version 2.1.4-rust.1-rc.6 and Decky Loader 3.3.0 on 21 October 2026.
+
+| What we measured | Python version | This version |
+|---|---:|---:|
+| Theme appears on a newly opened Steam page | 0.6–4.7 s | 0.1–0.2 s |
+| Theme appears on a reloaded Steam page | 0.8–2.9 s | 0.01–0.02 s |
+| Background checks inside each Steam page | 20 per minute | none |
+| Reset themes | about 80–170 ms | about 60–150 ms |
+| Memory use | about 69–72 MB | about 56–58 MB |
+| CPU time used while idle for 2 minutes | about 0.10 s | about 0.01 s |
+| CPU time used during 105 s of browsing | about 0.20 s | about 0.05 s |
+| Screen smoothness while browsing (time per frame) | about 13 ms | about 13 ms |
+
+The standard Decky Loader keeps a small Python helper running next to the native program. Most of this version's memory use is that helper.
+
+### With beallio's Decky Loader fork
+
+Tested on 19 October 2026. The fork runs the native program without the Python helper.
 
 | What we measured | Python version | This version |
 |---|---:|---:|
@@ -33,13 +54,15 @@ We compared this version with the standard Python version 2.1.4 on a Steam Deck 
 | Turn a theme on or off | about 2–3 ms | about 2–3 ms |
 | Load the theme list | under 1 ms | under 1 ms |
 | Memory use | about 64 MB | about 15–17 MB |
-| CPU time used while idle for 2 minutes | about 0.07 s | 0–0.01 s |
-| CPU time used during 105 s of browsing | about 0.12 s | about 0.03 s |
 | Screen smoothness while browsing (time per frame) | about 13 ms | about 13 ms |
 
 The plugin does not make Steam itself scroll or move more smoothly. The time Steam needs to draw each screen depends on the theme's CSS, and both versions add the same CSS.
 
 These numbers come from a virtual machine, not a real Steam Deck. Your results can be different.
+
+## Troubleshooting
+
+**An update from a ZIP file does not finish (standard Decky Loader).** The standard Decky Loader cannot replace a running plugin when the ZIP file name is different from the plugin name. The old version keeps running. To fix it, rename the file to `CSS Loader.zip` and install it again. You can also uninstall CSS Loader first and then install the ZIP. Your themes and settings stay in place in both cases. Updates from the plugin store are not affected.
 
 ## Documentation
 
