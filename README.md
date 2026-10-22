@@ -42,7 +42,7 @@ Memory use is about the same, because the standard Decky Loader keeps a small Py
 
 ### With beallio's Decky Loader fork
 
-Tested on 19 October 2026. The fork runs the native program without the Python helper.
+Tested on 19 October 2026. We measured CPU time again on 21 October 2026 with version 2.1.4-rust.1-rc.7. The fork runs the native program without the Python helper.
 
 | What we measured | Python version | This version |
 |---|---:|---:|
@@ -54,6 +54,8 @@ Tested on 19 October 2026. The fork runs the native program without the Python h
 | Turn a theme on or off | about 2–3 ms | about 2–3 ms |
 | Load the theme list | under 1 ms | under 1 ms |
 | Memory use | about 64 MB | about 15–17 MB |
+| CPU time used while idle for 2 minutes | about 0.07 s | about 0.01 s |
+| CPU time used during 105 s of browsing | about 0.15 s | about 0.05–0.06 s |
 | Screen smoothness while browsing (time per frame) | about 13 ms | about 13 ms |
 
 The plugin does not make Steam itself scroll or move more smoothly. The time Steam needs to draw each screen depends on the theme's CSS, and both versions add the same CSS.
