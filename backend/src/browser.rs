@@ -161,6 +161,11 @@ const REMOVE_ALL_JS: &str = r#"
             document.querySelectorAll('.css-loader-style').forEach(x => x.remove());
         })()
         "#;
+/// Budget for the commands that only gate a new attach, and for the liveness query that follows a
+/// failed one. A tab that dies mid-attach used to swallow the full command timeout, and that await
+/// blocks the whole event loop, which stalls CSS work for every other tab.
+const ATTACH_COMMAND_TIMEOUT: Duration = Duration::from_secs(1);
+
 fn preload_script(styles: &IndexMap<String, String>) -> String {
     let styles = styles
         .iter()
@@ -369,15 +374,15 @@ impl Browser {
         }
     }
 
-    /// Whether CDP still lists this page. Capped well below the command timeout: this runs only on
-    /// an attach failure, and a browser that ignores the command must not double the stall.
+    /// Whether CDP still lists this page. Timed like the attach commands it follows: this runs only
+    /// on a failed attach, and a browser that ignores the command must not extend the stall.
     async fn target_listed(&self, cdp: &Cdp, id: &str) -> bool {
         cdp.command_within(
             "Target.getTargets",
             json!({}),
             None,
             true,
-            Duration::from_secs(1),
+            ATTACH_COMMAND_TIMEOUT,
         )
         .await
         .is_some_and(|response| lists_target(&response, id))
@@ -743,7 +748,13 @@ impl Browser {
         self.tabs.lock().await.insert(id.to_owned(), tab);
 
         let runtime = cdp
-            .command("Runtime.enable", json!({}), Some(session), true)
+            .command_within(
+                "Runtime.enable",
+                json!({}),
+                Some(session),
+                true,
+                ATTACH_COMMAND_TIMEOUT,
+            )
             .await;
         if !runtime
             .as_ref()
@@ -755,7 +766,13 @@ impl Browser {
             return;
         }
         let page = cdp
-            .command("Page.enable", json!({}), Some(session), true)
+            .command_within(
+                "Page.enable",
+                json!({}),
+                Some(session),
+                true,
+                ATTACH_COMMAND_TIMEOUT,
+            )
             .await;
         if !page
             .as_ref()
@@ -765,11 +782,12 @@ impl Browser {
                 .await;
         }
         let binding = cdp
-            .command(
+            .command_within(
                 "Runtime.addBinding",
                 json!({"name": "__cssLoaderWatch"}),
                 Some(session),
                 true,
+                ATTACH_COMMAND_TIMEOUT,
             )
             .await;
         if !binding
@@ -1266,6 +1284,48 @@ mod tests {
         }
     }
 
+    /// Scripted CDP endpoint for a tab that dies between the attach event and `Runtime.enable`, like
+    /// a toast that closes while the plugin is still attaching: the command is never answered, and
+    /// the target has left the target list by the time the plugin asks.
+    async fn fake_dying_tab_cdp(listener: TcpListener) {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        let info = json!({"targetId": "dying", "type": "page", "title": "", "url": "about:blank"});
+        let mut attached = false;
+        while let Some(Ok(Message::Text(text))) = ws.next().await {
+            let command: Value = serde_json::from_str(&text).unwrap();
+            let method = command["method"].as_str().unwrap_or_default();
+            if method == "Runtime.enable" {
+                continue;
+            }
+            let result = match method {
+                "Target.getTargets" => {
+                    if attached {
+                        json!({"targetInfos": []})
+                    } else {
+                        json!({"targetInfos": [info]})
+                    }
+                }
+                "Target.attachToTarget" => {
+                    attached = true;
+                    let event = json!({
+                        "method": "Target.attachedToTarget",
+                        "params": {"sessionId": "session", "targetInfo": info}
+                    });
+                    ws.send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                    json!({"sessionId": "session"})
+                }
+                _ => json!({}),
+            };
+            let response = json!({"id": command["id"], "result": result});
+            ws.send(Message::Text(response.to_string().into()))
+                .await
+                .unwrap();
+        }
+    }
+
     fn cdp_for_tests(closed: bool) -> Cdp {
         let (tx, _) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(1);
@@ -1378,5 +1438,37 @@ mod tests {
         })
         .await;
         assert!(initialized.is_ok(), "the Steam popup was never initialized");
+    }
+
+    /// An unanswered attach command used to block the event loop for the full command timeout. It
+    /// must give up inside the attach budget, and the tab must be dropped once the target is gone.
+    #[tokio::test]
+    async fn unanswered_attach_command_gives_up_within_the_attach_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(fake_dying_tab_cdp(listener));
+        let (stream, _) = connect_async(url).await.unwrap();
+        let browser = Browser::new();
+        let connection = Arc::clone(&browser);
+        tokio::spawn(async move { connection.connected(stream, Weak::new()).await });
+
+        let appeared = timeout(Duration::from_secs(2), async {
+            while !browser.tabs.lock().await.contains_key("dying") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(appeared.is_ok(), "the dying tab was never attached");
+
+        let started = std::time::Instant::now();
+        let dropped = timeout(Duration::from_secs(4), async {
+            while browser.tabs.lock().await.contains_key("dying") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(dropped.is_ok(), "the dead tab was never dropped");
+        // It really did wait for the unanswered command, but inside the budget, not the 5 s default.
+        assert!(started.elapsed() >= Duration::from_millis(500));
     }
 }
