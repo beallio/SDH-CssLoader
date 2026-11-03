@@ -313,18 +313,19 @@ impl Cdp {
 }
 
 /// True when a failed command only means the tab is gone. `listed` says whether CDP still lists the
-/// target, and matters only when the command got no answer at all: CEF sends detach events, but the
-/// event loop is busy waiting on this very command, so the target list is the only timely witness.
-fn tab_gone(cdp: &Cdp, response: Option<&Value>, listed: bool) -> bool {
-    cdp.tab_closed(response) || (response.is_none() && !listed)
+/// target (`None` when the list could not be read), and matters only when the command got no answer
+/// at all: CEF sends detach events, but the event loop is busy waiting on this very command, so the
+/// target list is the only timely witness. Only a valid list without the target proves it is gone.
+fn tab_gone(cdp: &Cdp, response: Option<&Value>, listed: Option<bool>) -> bool {
+    cdp.tab_closed(response) || (response.is_none() && listed == Some(false))
 }
 
-/// Whether a `Target.getTargets` answer still lists this page.
-fn lists_target(response: &Value, id: &str) -> bool {
+/// Whether a `Target.getTargets` answer still lists this page; `None` for an error or malformed answer.
+fn lists_target(response: &Value, id: &str) -> Option<bool> {
     response
         .pointer("/result/targetInfos")
         .and_then(Value::as_array)
-        .is_some_and(|targets| {
+        .map(|targets| {
             targets
                 .iter()
                 .any(|target| target.get("targetId").and_then(Value::as_str) == Some(id))
@@ -366,7 +367,11 @@ impl Browser {
             .unwrap_or("no answer");
         // Only a command with no answer at all needs the target list; an error answer is judged from
         // its code and text alone, so a real failure on a live tab never pays for this query.
-        let listed = response.is_some() || self.target_listed(cdp, id).await;
+        let listed = if response.is_some() {
+            None
+        } else {
+            self.target_listed(cdp, id).await
+        };
         if tab_gone(cdp, response, listed) {
             log::debug!("Tab {id} closed before it could {action}: {message}");
         } else {
@@ -374,9 +379,10 @@ impl Browser {
         }
     }
 
-    /// Whether CDP still lists this page. Timed like the attach commands it follows: this runs only
-    /// on a failed attach, and a browser that ignores the command must not extend the stall.
-    async fn target_listed(&self, cdp: &Cdp, id: &str) -> bool {
+    /// Whether CDP still lists this page, or `None` when the browser did not give a usable list. Timed
+    /// like the attach commands it follows: this runs only on a failed attach, and a browser that
+    /// ignores the command must not extend the stall.
+    async fn target_listed(&self, cdp: &Cdp, id: &str) -> Option<bool> {
         cdp.command_within(
             "Target.getTargets",
             json!({}),
@@ -385,7 +391,7 @@ impl Browser {
             ATTACH_COMMAND_TIMEOUT,
         )
         .await
-        .is_some_and(|response| lists_target(&response, id))
+        .and_then(|response| lists_target(&response, id))
     }
 
     pub fn start(self: &Arc<Self>, backend: Weak<Backend>) {
@@ -1370,30 +1376,33 @@ mod tests {
     #[test]
     fn a_silent_command_is_a_closed_tab_only_when_the_target_left_the_list() {
         let live = cdp_for_tests(false);
-        assert!(tab_gone(&live, None, false));
+        assert!(tab_gone(&live, None, Some(false)));
         // A target that is still listed and never answered is a live tab that failed for real.
-        assert!(!tab_gone(&live, None, true));
-        // The connection flag wins over the target list, which may be stale.
-        assert!(tab_gone(&cdp_for_tests(true), None, true));
+        assert!(!tab_gone(&live, None, Some(true)));
+        // An unreadable target list (timeout, error, malformed) proves nothing: keep the warning.
+        assert!(!tab_gone(&live, None, None));
+        // The connection flag wins over the target list, which may be stale or unreadable.
+        assert!(tab_gone(&cdp_for_tests(true), None, Some(true)));
+        assert!(tab_gone(&cdp_for_tests(true), None, None));
         // An answered command is judged by its answer, never by the target list.
         assert!(!tab_gone(
             &live,
             Some(&json!({"id": 9, "result": {}})),
-            true
+            None
         ));
         assert!(tab_gone(
             &live,
             Some(
                 &json!({"id": 9, "error": {"code": -32001, "message": "Session with given id not found."}})
             ),
-            true
+            None
         ));
         assert!(!tab_gone(
             &live,
             Some(
                 &json!({"id": 9, "error": {"code": -32601, "message": "'Runtime.enable' wasn't found"}})
             ),
-            true
+            None
         ));
     }
 
@@ -1403,16 +1412,31 @@ mod tests {
             {"targetId": "other", "type": "page"},
             {"targetId": "tab", "type": "page"}
         ]}});
-        assert!(lists_target(&listed, "tab"));
-        assert!(!lists_target(&listed, "gone"));
-        assert!(!lists_target(
-            &json!({"id": 9, "result": {"targetInfos": []}}),
-            "tab"
-        ));
-        assert!(!lists_target(
-            &json!({"id": 9, "error": {"code": -32601, "message": "not found"}}),
-            "tab"
-        ));
+        assert_eq!(lists_target(&listed, "tab"), Some(true));
+        assert_eq!(lists_target(&listed, "gone"), Some(false));
+        assert_eq!(
+            lists_target(&json!({"id": 9, "result": {"targetInfos": []}}), "tab"),
+            Some(false)
+        );
+        // Error and malformed answers are unknown, not proof of absence.
+        assert_eq!(
+            lists_target(
+                &json!({"id": 9, "error": {"code": -32601, "message": "not found"}}),
+                "tab"
+            ),
+            None
+        );
+        assert_eq!(lists_target(&json!({"id": 9, "result": {}}), "tab"), None);
+    }
+
+    /// A browser that does not answer `Target.getTargets` gives no proof the tab is gone, so the
+    /// silent command it follows must still warn.
+    #[tokio::test]
+    async fn an_unanswered_target_list_keeps_the_warning() {
+        let live = cdp_for_tests(false);
+        let listed = Browser::new().target_listed(&live, "tab").await;
+        assert_eq!(listed, None);
+        assert!(!tab_gone(&live, None, listed));
     }
 
     #[tokio::test]
