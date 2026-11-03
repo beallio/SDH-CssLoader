@@ -257,6 +257,23 @@ impl Cdp {
             None
         }
     }
+
+    /// True when a per-tab command failed only because that tab is gone: the connection dropped, or
+    /// CDP rejected the command for a session that was already detached. These commands send fixed
+    /// parameters, so an error answer describes the session, not a mistake in the call.
+    fn tab_closed(&self, response: Option<&Value>) -> bool {
+        *self.closed.borrow() || response.is_some_and(|response| response.get("error").is_some())
+    }
+
+    /// Reports a failed per-tab command. Tabs close mid-attach all the time (toasts, overlays,
+    /// screensaver windows), so that is routine; a live tab that never answered is not.
+    fn log_tab_failure(&self, id: &str, action: &str, response: Option<&Value>) {
+        if self.tab_closed(response) {
+            log::debug!("Tab {id} closed before it could {action}");
+        } else {
+            log::warn!("Failed to {action} on tab {id}");
+        }
+    }
 }
 
 #[derive(Default)]
@@ -633,33 +650,39 @@ impl Browser {
         };
         self.tabs.lock().await.insert(id.to_owned(), tab);
 
-        let runtime_enabled = cdp
+        let runtime = cdp
             .command("Runtime.enable", json!({}), Some(session), true)
-            .await
-            .is_some_and(|response| response.get("error").is_none());
-        if !runtime_enabled {
-            log::warn!("Failed to enable the Runtime domain on tab {id}");
+            .await;
+        if !runtime
+            .as_ref()
+            .is_some_and(|response| response.get("error").is_none())
+        {
+            cdp.log_tab_failure(id, "enable the Runtime domain", runtime.as_ref());
             self.tabs.lock().await.remove(id);
             return;
         }
-        let page_enabled = cdp
+        let page = cdp
             .command("Page.enable", json!({}), Some(session), true)
-            .await
-            .is_some_and(|response| response.get("error").is_none());
-        if !page_enabled {
-            log::warn!("Failed to enable the Page domain on tab {id}");
+            .await;
+        if !page
+            .as_ref()
+            .is_some_and(|response| response.get("error").is_none())
+        {
+            cdp.log_tab_failure(id, "enable the Page domain", page.as_ref());
         }
-        let binding_added = cdp
+        let binding = cdp
             .command(
                 "Runtime.addBinding",
                 json!({"name": "__cssLoaderWatch"}),
                 Some(session),
                 true,
             )
-            .await
-            .is_some_and(|response| response.get("error").is_none());
-        if !binding_added {
-            log::warn!("Failed to install CSS repair binding on tab {id}");
+            .await;
+        if !binding
+            .as_ref()
+            .is_some_and(|response| response.get("error").is_none())
+        {
+            cdp.log_tab_failure(id, "install CSS repair binding", binding.as_ref());
         }
         self.update_preload_script(id, cdp, session).await;
         self.initialize_tab(id, cdp, backend).await;
@@ -740,27 +763,32 @@ impl Browser {
         }) else {
             return;
         };
-        if let Some(old_id) = old_id
-            && !cdp
+        if let Some(old_id) = old_id {
+            let removed = cdp
                 .command(
                     "Page.removeScriptToEvaluateOnNewDocument",
                     json!({"identifier": old_id}),
                     Some(session),
                     true,
                 )
-                .await
+                .await;
+            if !removed
+                .as_ref()
                 .is_some_and(|response| response.get("error").is_none())
-        {
-            log::warn!("Failed to replace CSS prepaint script on tab {id}");
+            {
+                cdp.log_tab_failure(id, "replace CSS prepaint script", removed.as_ref());
+            }
         }
-        let script_id = cdp
+        let added = cdp
             .command(
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({"source": source}),
                 Some(session),
                 true,
             )
-            .await
+            .await;
+        let script_id = added
+            .as_ref()
             .filter(|response| response.get("error").is_none())
             .and_then(|response| {
                 response
@@ -769,7 +797,11 @@ impl Browser {
                     .map(str::to_owned)
             });
         if script_id.is_none() {
-            log::warn!("Failed to register CSS prepaint script for future documents on tab {id}");
+            cdp.log_tab_failure(
+                id,
+                "register CSS prepaint script for future documents",
+                added.as_ref(),
+            );
         }
         if let Some(tab) = self.tabs.lock().await.get_mut(id) {
             tab.preload_script_id = script_id;
@@ -1134,6 +1166,36 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    fn cdp_for_tests(closed: bool) -> Cdp {
+        let (tx, _) = mpsc::unbounded_channel();
+        let (events, _) = broadcast::channel(1);
+        let (_closed_tx, closed) = watch::channel(closed);
+        Cdp {
+            tx,
+            pending: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(1),
+            events,
+            closed,
+        }
+    }
+
+    /// Toast, overlay and screensaver tabs close between the attach event and the first command, so
+    /// the error answer such a command gets must stay out of the log's warnings.
+    #[test]
+    fn command_failures_of_a_closed_tab_are_not_warnings() {
+        let live = cdp_for_tests(false);
+        assert!(!live.tab_closed(Some(&json!({"id": 9, "result": {}}))));
+        assert!(live.tab_closed(Some(&json!({
+            "id": 9,
+            "error": {"code": -32001, "message": "Session with given id not found."}
+        }))));
+        // A live tab that never answers is a real failure.
+        assert!(!live.tab_closed(None));
+        // A dropped connection takes every tab with it.
+        assert!(cdp_for_tests(true).tab_closed(None));
+        assert!(cdp_for_tests(true).tab_closed(Some(&json!({"id": 9, "result": {}}))));
     }
 
     #[tokio::test]
