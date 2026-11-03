@@ -259,21 +259,57 @@ impl Cdp {
     }
 
     /// True when a per-tab command failed only because that tab is gone: the connection dropped, or
-    /// CDP rejected the command for a session that was already detached. These commands send fixed
-    /// parameters, so an error answer describes the session, not a mistake in the call.
+    /// CDP rejected the command for a session or target that no longer exists. Every other error
+    /// answer is a real failure on a live tab and keeps its warning.
     fn tab_closed(&self, response: Option<&Value>) -> bool {
-        *self.closed.borrow() || response.is_some_and(|response| response.get("error").is_some())
+        if *self.closed.borrow() {
+            return true;
+        }
+        let Some(error) = response.and_then(|response| response.get("error")) else {
+            return false;
+        };
+        // -32001 is the session-gone error; CEF's wording varies, so match the known texts too.
+        if error.get("code").and_then(Value::as_i64) == Some(-32001) {
+            return true;
+        }
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        [
+            "Session with given id not found",
+            "No target with given id",
+            "Target closed",
+            "detached",
+        ]
+        .iter()
+        .any(|known| contains_ignore_ascii_case(message, known))
     }
 
-    /// Reports a failed per-tab command. Tabs close mid-attach all the time (toasts, overlays,
-    /// screensaver windows), so that is routine; a live tab that never answered is not.
+    /// Reports a failed per-tab command with the reason CDP gave. Tabs close mid-attach all the time
+    /// (toasts, overlays, screensaver windows), so that is routine; a live tab that did not answer,
+    /// or answered with anything else, is not.
     fn log_tab_failure(&self, id: &str, action: &str, response: Option<&Value>) {
+        let message = response
+            .and_then(|response| response.pointer("/error/message"))
+            .and_then(Value::as_str)
+            .unwrap_or("no answer");
         if self.tab_closed(response) {
-            log::debug!("Tab {id} closed before it could {action}");
+            log::debug!("Tab {id} closed before it could {action}: {message}");
         } else {
-            log::warn!("Failed to {action} on tab {id}");
+            log::warn!("Failed to {action} on tab {id}: {message}");
         }
     }
+}
+
+/// Case-insensitive ASCII substring test, so matching CDP error text allocates nothing.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let (haystack, needle) = (haystack.as_bytes(), needle.as_bytes());
+    needle.is_empty()
+        || (haystack.len() >= needle.len()
+            && haystack
+                .windows(needle.len())
+                .any(|window| window.eq_ignore_ascii_case(needle)))
 }
 
 #[derive(Default)]
@@ -1182,16 +1218,25 @@ mod tests {
     }
 
     /// Toast, overlay and screensaver tabs close between the attach event and the first command, so
-    /// the error answer such a command gets must stay out of the log's warnings.
+    /// the answer such a command gets must stay out of the log's warnings. Anything else must not.
     #[test]
     fn command_failures_of_a_closed_tab_are_not_warnings() {
         let live = cdp_for_tests(false);
+        let error = |code: i64, message: &str| json!({"id": 9, "error": {"code": code, "message": message}});
         assert!(!live.tab_closed(Some(&json!({"id": 9, "result": {}}))));
-        assert!(live.tab_closed(Some(&json!({
-            "id": 9,
-            "error": {"code": -32001, "message": "Session with given id not found."}
-        }))));
-        // A live tab that never answers is a real failure.
+        // Session-gone, by code and by CEF's wording, which is matched without case.
+        assert!(live.tab_closed(Some(&error(-32001, "Session with given id not found."))));
+        assert!(live.tab_closed(Some(&error(-32000, "SESSION WITH GIVEN ID NOT FOUND"))));
+        assert!(live.tab_closed(Some(&error(-32602, "No target with given id found"))));
+        assert!(live.tab_closed(Some(&error(-32000, "Target closed."))));
+        assert!(live.tab_closed(Some(&error(
+            -32000,
+            "Not attached to an active page, session detached"
+        ))));
+        // A live tab that answered with any other error is a real failure: keep the warning.
+        assert!(!live.tab_closed(Some(&error(-32601, "'Runtime.enable' wasn't found"))));
+        assert!(!live.tab_closed(Some(&error(-32602, "Invalid parameters"))));
+        // A live tab that never answers is a real failure too.
         assert!(!live.tab_closed(None));
         // A dropped connection takes every tab with it.
         assert!(cdp_for_tests(true).tab_closed(None));
