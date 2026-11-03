@@ -228,6 +228,26 @@ impl Cdp {
         session: Option<&str>,
         wait_for_response: bool,
     ) -> Option<Value> {
+        self.command_within(
+            method,
+            params,
+            session,
+            wait_for_response,
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    /// Like `command`, but gives up after `limit`. Used where an unresponsive browser must not hold
+    /// the event loop for the full command timeout.
+    async fn command_within(
+        &self,
+        method: &str,
+        params: Value,
+        session: Option<&str>,
+        wait_for_response: bool,
+        limit: Duration,
+    ) -> Option<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (response_tx, response_rx) = oneshot::channel();
         if wait_for_response {
@@ -246,7 +266,7 @@ impl Cdp {
             return None;
         }
         if wait_for_response {
-            match timeout(Duration::from_secs(5), response_rx).await {
+            match timeout(limit, response_rx).await {
                 Ok(Ok(value)) => Some(value),
                 _ => {
                     self.pending.lock().await.remove(&id);
@@ -285,21 +305,25 @@ impl Cdp {
         .iter()
         .any(|known| contains_ignore_ascii_case(message, known))
     }
+}
 
-    /// Reports a failed per-tab command with the reason CDP gave. Tabs close mid-attach all the time
-    /// (toasts, overlays, screensaver windows), so that is routine; a live tab that did not answer,
-    /// or answered with anything else, is not.
-    fn log_tab_failure(&self, id: &str, action: &str, response: Option<&Value>) {
-        let message = response
-            .and_then(|response| response.pointer("/error/message"))
-            .and_then(Value::as_str)
-            .unwrap_or("no answer");
-        if self.tab_closed(response) {
-            log::debug!("Tab {id} closed before it could {action}: {message}");
-        } else {
-            log::warn!("Failed to {action} on tab {id}: {message}");
-        }
-    }
+/// True when a failed command only means the tab is gone. `listed` says whether CDP still lists the
+/// target, and matters only when the command got no answer at all: CEF sends detach events, but the
+/// event loop is busy waiting on this very command, so the target list is the only timely witness.
+fn tab_gone(cdp: &Cdp, response: Option<&Value>, listed: bool) -> bool {
+    cdp.tab_closed(response) || (response.is_none() && !listed)
+}
+
+/// Whether a `Target.getTargets` answer still lists this page.
+fn lists_target(response: &Value, id: &str) -> bool {
+    response
+        .pointer("/result/targetInfos")
+        .and_then(Value::as_array)
+        .is_some_and(|targets| {
+            targets
+                .iter()
+                .any(|target| target.get("targetId").and_then(Value::as_str) == Some(id))
+        })
 }
 
 /// Case-insensitive ASCII substring test, so matching CDP error text allocates nothing.
@@ -325,6 +349,38 @@ pub struct Browser {
 impl Browser {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Reports a failed per-tab command with the reason CDP gave. Tabs close mid-attach all the time
+    /// (toasts, overlays, screensaver windows), so that is routine; a live tab that did not answer,
+    /// or answered with anything else, is not.
+    async fn log_tab_failure(&self, cdp: &Cdp, id: &str, action: &str, response: Option<&Value>) {
+        let message = response
+            .and_then(|response| response.pointer("/error/message"))
+            .and_then(Value::as_str)
+            .unwrap_or("no answer");
+        // Only a command with no answer at all needs the target list; an error answer is judged from
+        // its code and text alone, so a real failure on a live tab never pays for this query.
+        let listed = response.is_some() || self.target_listed(cdp, id).await;
+        if tab_gone(cdp, response, listed) {
+            log::debug!("Tab {id} closed before it could {action}: {message}");
+        } else {
+            log::warn!("Failed to {action} on tab {id}: {message}");
+        }
+    }
+
+    /// Whether CDP still lists this page. Capped well below the command timeout: this runs only on
+    /// an attach failure, and a browser that ignores the command must not double the stall.
+    async fn target_listed(&self, cdp: &Cdp, id: &str) -> bool {
+        cdp.command_within(
+            "Target.getTargets",
+            json!({}),
+            None,
+            true,
+            Duration::from_secs(1),
+        )
+        .await
+        .is_some_and(|response| lists_target(&response, id))
     }
 
     pub fn start(self: &Arc<Self>, backend: Weak<Backend>) {
@@ -693,7 +749,8 @@ impl Browser {
             .as_ref()
             .is_some_and(|response| response.get("error").is_none())
         {
-            cdp.log_tab_failure(id, "enable the Runtime domain", runtime.as_ref());
+            self.log_tab_failure(cdp, id, "enable the Runtime domain", runtime.as_ref())
+                .await;
             self.tabs.lock().await.remove(id);
             return;
         }
@@ -704,7 +761,8 @@ impl Browser {
             .as_ref()
             .is_some_and(|response| response.get("error").is_none())
         {
-            cdp.log_tab_failure(id, "enable the Page domain", page.as_ref());
+            self.log_tab_failure(cdp, id, "enable the Page domain", page.as_ref())
+                .await;
         }
         let binding = cdp
             .command(
@@ -718,7 +776,8 @@ impl Browser {
             .as_ref()
             .is_some_and(|response| response.get("error").is_none())
         {
-            cdp.log_tab_failure(id, "install CSS repair binding", binding.as_ref());
+            self.log_tab_failure(cdp, id, "install CSS repair binding", binding.as_ref())
+                .await;
         }
         self.update_preload_script(id, cdp, session).await;
         self.initialize_tab(id, cdp, backend).await;
@@ -812,7 +871,8 @@ impl Browser {
                 .as_ref()
                 .is_some_and(|response| response.get("error").is_none())
             {
-                cdp.log_tab_failure(id, "replace CSS prepaint script", removed.as_ref());
+                self.log_tab_failure(cdp, id, "replace CSS prepaint script", removed.as_ref())
+                    .await;
             }
         }
         let added = cdp
@@ -833,11 +893,13 @@ impl Browser {
                     .map(str::to_owned)
             });
         if script_id.is_none() {
-            cdp.log_tab_failure(
+            self.log_tab_failure(
+                cdp,
                 id,
                 "register CSS prepaint script for future documents",
                 added.as_ref(),
-            );
+            )
+            .await;
         }
         if let Some(tab) = self.tabs.lock().await.get_mut(id) {
             tab.preload_script_id = script_id;
@@ -1241,6 +1303,56 @@ mod tests {
         // A dropped connection takes every tab with it.
         assert!(cdp_for_tests(true).tab_closed(None));
         assert!(cdp_for_tests(true).tab_closed(Some(&json!({"id": 9, "result": {}}))));
+    }
+
+    /// A tab closed through CEF's HTTP API does not answer at all: the command times out while the
+    /// detach event waits behind it in the event loop, so only the target list shows it is gone.
+    #[test]
+    fn a_silent_command_is_a_closed_tab_only_when_the_target_left_the_list() {
+        let live = cdp_for_tests(false);
+        assert!(tab_gone(&live, None, false));
+        // A target that is still listed and never answered is a live tab that failed for real.
+        assert!(!tab_gone(&live, None, true));
+        // The connection flag wins over the target list, which may be stale.
+        assert!(tab_gone(&cdp_for_tests(true), None, true));
+        // An answered command is judged by its answer, never by the target list.
+        assert!(!tab_gone(
+            &live,
+            Some(&json!({"id": 9, "result": {}})),
+            true
+        ));
+        assert!(tab_gone(
+            &live,
+            Some(
+                &json!({"id": 9, "error": {"code": -32001, "message": "Session with given id not found."}})
+            ),
+            true
+        ));
+        assert!(!tab_gone(
+            &live,
+            Some(
+                &json!({"id": 9, "error": {"code": -32601, "message": "'Runtime.enable' wasn't found"}})
+            ),
+            true
+        ));
+    }
+
+    #[test]
+    fn target_list_answer_says_whether_the_page_is_still_listed() {
+        let listed = json!({"id": 9, "result": {"targetInfos": [
+            {"targetId": "other", "type": "page"},
+            {"targetId": "tab", "type": "page"}
+        ]}});
+        assert!(lists_target(&listed, "tab"));
+        assert!(!lists_target(&listed, "gone"));
+        assert!(!lists_target(
+            &json!({"id": 9, "result": {"targetInfos": []}}),
+            "tab"
+        ));
+        assert!(!lists_target(
+            &json!({"id": 9, "error": {"code": -32601, "message": "not found"}}),
+            "tab"
+        ));
     }
 
     #[tokio::test]
