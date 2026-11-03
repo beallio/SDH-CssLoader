@@ -10,6 +10,7 @@ protocol (newline-delimited JSON on DECKY_PLUGIN_SOCKET).
 
 import asyncio
 import ctypes
+import hashlib
 import itertools
 import json
 import os
@@ -27,6 +28,9 @@ import decky
 STOP_SECONDS = 4.5
 PR_SET_PDEATHSIG = 1
 _prctl = ctypes.CDLL(None, use_errno=True).prctl
+_malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)  # glibc only
+TRIM_LINE_BYTES = 1024 * 1024
+TRIM_DELAY_SECONDS = 1.0
 
 
 def _park_at_socket_eof():
@@ -66,6 +70,48 @@ def _backend_path():
     return path
 
 
+def _digest(file):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: file.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.digest()
+
+
+def _stage():
+    # A separate executable avoids ETXTBSY when upstream extracts an update
+    # over the live plugin folder. Rename also works while the old copy runs.
+    source = _backend_path()
+    os.makedirs(decky.DECKY_PLUGIN_RUNTIME_DIR, exist_ok=True)
+    copy = _copy_path()
+    with open(source, "rb") as packaged:
+        existing_digest = None
+        try:
+            if (
+                not os.path.islink(copy)
+                and os.path.isfile(copy)
+                and os.access(copy, os.X_OK)
+                and not os.path.samefile(source, copy)
+            ):
+                with open(copy, "rb") as existing:
+                    existing_digest = _digest(existing)
+        except OSError:
+            pass
+        if existing_digest is not None:
+            if _digest(packaged) == existing_digest:
+                return copy
+            packaged.seek(0)
+        fd, staged = tempfile.mkstemp(dir=decky.DECKY_PLUGIN_RUNTIME_DIR)
+        try:
+            with os.fdopen(fd, "wb") as target:
+                shutil.copyfileobj(packaged, target)
+            os.chmod(staged, 0o700)
+            os.replace(staged, copy)
+        except BaseException:
+            os.unlink(staged)
+            raise
+    return copy
+
+
 def _start(env):
     worker = os.getpid()
 
@@ -75,24 +121,8 @@ def _start(env):
         if _prctl(PR_SET_PDEATHSIG, signal.SIGKILL) != 0 or os.getppid() != worker:
             os._exit(1)
 
-    # Run a copy, so the packaged file is never busy: upstream can extract a
-    # ZIP update over the live plugin folder, and Linux refuses to overwrite a
-    # running executable (ETXTBSY). Replace the copy by rename for the same
-    # reason, and keep it while the backend runs, because a script backend's
-    # interpreter opens it by path after exec.
-    source = _backend_path()
-    os.makedirs(decky.DECKY_PLUGIN_RUNTIME_DIR, exist_ok=True)
-    fd, staged = tempfile.mkstemp(dir=decky.DECKY_PLUGIN_RUNTIME_DIR)
-    try:
-        with os.fdopen(fd, "wb") as target, open(source, "rb") as packaged:
-            shutil.copyfileobj(packaged, target)
-        os.chmod(staged, 0o700)
-        os.replace(staged, _copy_path())
-    except BaseException:
-        os.unlink(staged)
-        raise
     return subprocess.Popen(
-        [_copy_path()], env={**os.environ, **env}, preexec_fn=die_with_worker
+        [_stage()], env={**os.environ, **env}, preexec_fn=die_with_worker
     )
 
 
@@ -122,6 +152,8 @@ class Plugin:
         self._pending = {}
         self._ids = itertools.count()
         self._deadline = None
+        self._trim = None
+        self._trim_armed = False
 
     def __getattr__(self, name):
         # Upstream finds frontend methods with getattr; hooks start with "_".
@@ -137,12 +169,13 @@ class Plugin:
         await self._ready.wait()
         if self._error is not None:
             raise RuntimeError(self._error)
+        self._postpone_trim()
         key = str(next(self._ids))
         reply = asyncio.get_running_loop().create_future()
         self._pending[key] = reply
         message = {"type": 0, "method": method, "id": key, "args": args}
         try:
-            self._writer.write(json.dumps(message).encode() + b"\n")
+            self._writer.write(json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n")
             await self._writer.drain()
             return await reply
         finally:
@@ -158,8 +191,9 @@ class Plugin:
                 if self._process.poll() is not None:
                     raise RuntimeError(f"backend exited with {self._process.returncode}")
                 try:
+                    # No line cap: a whole reply is one line, and plugin data can be large.
                     reader, self._writer = await asyncio.open_unix_connection(
-                        socket, limit=64 * 1024 * 1024
+                        socket, limit=sys.maxsize
                     )
                     break
                 except (FileNotFoundError, ConnectionRefusedError):
@@ -172,20 +206,53 @@ class Plugin:
         await self._relay(reader)
 
     async def _relay(self, reader):
-        while line := await reader.readline():
-            message = json.loads(line)
-            if message.get("type") == 1:
-                reply = self._pending.get(message.get("id"))
-                if reply is None or reply.done():
-                    continue
-                if message.get("success"):
-                    reply.set_result(message.get("res"))
-                else:
-                    reply.set_exception(RuntimeError(message.get("res")))
-            elif message.get("type") == 2:
-                await decky.emit(message["event"], *message.get("args", []))
-        self._writer.close()
-        self._fail("native backend stopped")
+        try:
+            while line := await reader.readline():
+                # Handled in its own frame, so no reference to a reply outlives it
+                # while the relay waits for the next line.
+                if len(line) > TRIM_LINE_BYTES:
+                    self._trim_armed = True
+                await self._handle(line)
+                line = None
+                self._postpone_trim()
+        except Exception as error:
+            self._fail(f"native backend relay failed: {error}")
+        finally:
+            self._writer.close()
+            if self._error is None:
+                self._fail("native backend stopped")
+
+    async def _handle(self, line):
+        message = json.loads(line)
+        del line
+        if message.get("type") == 1:
+            reply = self._pending.get(message.get("id"))
+            if reply is None or reply.done():
+                return
+            if message.get("success"):
+                reply.set_result(message.get("res"))
+            else:
+                reply.set_exception(RuntimeError(message.get("res")))
+        elif message.get("type") == 2:
+            await decky.emit(message["event"], *message.get("args", []))
+
+    def _postpone_trim(self):
+        # glibc keeps freed reply memory in its arenas. After a large reply, give
+        # it back only once the relay has been quiet: any call or reply restarts
+        # the wait, so the trim and its page refaults stay out of active traffic.
+        if not self._trim_armed or _malloc_trim is None:
+            return
+        if self._trim is not None:
+            self._trim.cancel()
+        self._trim = asyncio.get_running_loop().call_later(TRIM_DELAY_SECONDS, self._idle_trim)
+
+    def _idle_trim(self):
+        self._trim = None
+        if self._pending:
+            self._postpone_trim()
+            return
+        self._trim_armed = False
+        _malloc_trim(0)
 
     def _fail(self, error):
         self._error = error
