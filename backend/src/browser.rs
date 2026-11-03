@@ -3,12 +3,13 @@ use futures_util::{SinkExt, StreamExt};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     sync::{
         Arc, LazyLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     net::TcpStream,
@@ -165,6 +166,117 @@ const REMOVE_ALL_JS: &str = r#"
 /// failed one. A tab that dies mid-attach used to swallow the full command timeout, and that await
 /// blocks the whole event loop, which stalls CSS work for every other tab.
 const ATTACH_COMMAND_TIMEOUT: Duration = Duration::from_secs(1);
+/// A browser is down for a while on every restart, and the health loop probes it every 3 s. One
+/// warning once the outage is old enough is worth reading; a warning per probe is not.
+const OUTAGE_ALERT_AFTER: Duration = Duration::from_secs(30);
+/// The event loop can drop many CDP events in one burst while a Steam page loads. One line per
+/// window, carrying the sum it covers, keeps the log readable and still shows the real volume.
+const LAG_WARN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Whether the Steam browser can be reached, and for how long it could not. The health loop keeps
+/// probing every 3 s, so this is what turns a wall of DEBUG lines into one WARNING and one INFO.
+#[derive(Default)]
+struct Outage {
+    /// When the current outage started, or `None` while the browser is reachable.
+    since: Option<Instant>,
+    /// Whether the outage has already been reported; cleared when the browser is back.
+    warned: bool,
+}
+
+impl Outage {
+    /// Records a failed probe and returns the warning once the outage is old enough. A browser that
+    /// stays down never warns twice, and a probe that fails again right after a report stays quiet.
+    fn failed(&mut self, now: Instant, error: &str) -> Option<String> {
+        let since = *self.since.get_or_insert(now);
+        let down = now.saturating_duration_since(since);
+        if self.warned || down < OUTAGE_ALERT_AFTER {
+            return None;
+        }
+        self.warned = true;
+        Some(format!(
+            "Steam browser unreachable for {}: {error}",
+            short_duration(down)
+        ))
+    }
+
+    /// Records a successful probe and returns the recovery line only when the outage was reported,
+    /// so a restart in the first half minute stays quiet and does not pair with a warning.
+    fn recovered(&mut self, now: Instant) -> Option<String> {
+        let since = self.since.take()?;
+        std::mem::replace(&mut self.warned, false).then(|| {
+            format!(
+                "Steam browser reachable again after {}",
+                short_duration(now.saturating_duration_since(since))
+            )
+        })
+    }
+}
+
+/// Dropped broadcast events, summed and reported at most once per window. The totals also feed the
+/// connection summary, so events dropped after the last warning still show up there.
+#[derive(Default)]
+struct LagLog {
+    /// Everything dropped since the connection started.
+    total: u64,
+    /// Dropped since the last warning was printed.
+    pending: u64,
+    last_warn: Option<Instant>,
+}
+
+impl LagLog {
+    /// Records `count` dropped events and returns the warning when this lag is the first after a
+    /// quiet window; earlier lags in that window are summed into it.
+    fn dropped(&mut self, count: u64, now: Instant) -> Option<String> {
+        self.total += count;
+        self.pending += count;
+        if self
+            .last_warn
+            .is_some_and(|last| now.saturating_duration_since(last) < LAG_WARN_INTERVAL)
+        {
+            return None;
+        }
+        self.last_warn = Some(now);
+        Some(format!(
+            "Event loop fell behind and dropped {} CDP events",
+            std::mem::take(&mut self.pending)
+        ))
+    }
+}
+
+/// Durations in log lines: `42s`, `2m 5s`, `1h 7m`. Two units already say how long something ran.
+fn short_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+/// A page without a title is logged as its URL, and an inline `data:` page carries its whole
+/// document there: keep only enough of it to recognise the page.
+fn short_title(title: &str) -> Cow<'_, str> {
+    /// Characters kept from an inline URL.
+    const KEEP: usize = 24;
+    if !title.starts_with("data:") {
+        return Cow::Borrowed(title);
+    }
+    // `char_indices` yields valid boundaries only, so the cut never splits a character.
+    match title.char_indices().nth(KEEP) {
+        Some((end, _)) => Cow::Owned(format!("{}…", &title[..end])),
+        None => Cow::Borrowed(title),
+    }
+}
+
+/// A commit with nothing to change still runs (a reset needs its remove-all script), but it says
+/// nothing a reader of the log wants, and theme toggles fire it often.
+fn transaction_level(adds: usize, removes: usize) -> log::Level {
+    if adds == 0 && removes == 0 {
+        log::Level::Debug
+    } else {
+        log::Level::Info
+    }
+}
 
 fn preload_script(styles: &IndexMap<String, String>) -> String {
     let styles = styles
@@ -217,12 +329,27 @@ impl Tab {
     }
 }
 
+/// What one connection did, counted as it happens so its end can say it in one line. These are
+/// plain atomics: a counter must never cost a lock on the event loop.
+#[derive(Default)]
+struct Stats {
+    /// Tabs that closed before a command reached them; routine for toasts, overlays and popups.
+    closed_tabs: AtomicU64,
+    /// Commands a live tab never answered, attach commands included.
+    no_answer: AtomicU64,
+    /// Transaction passes that had to be retried.
+    retries: AtomicU64,
+    /// Repairs that actually ran, not the health ticks that asked for one.
+    repairs: AtomicU64,
+}
+
 struct Cdp {
     tx: mpsc::UnboundedSender<Message>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     next_id: AtomicU64,
     events: broadcast::Sender<Value>,
     closed: watch::Receiver<bool>,
+    stats: Stats,
 }
 
 impl Cdp {
@@ -342,6 +469,33 @@ fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
                 .any(|window| window.eq_ignore_ascii_case(needle)))
 }
 
+/// One attempt to reach CEF and open the debugger socket. Each failure keeps the text the health
+/// loop already logs at DEBUG, because the outage warning repeats the last one verbatim.
+async fn probe_browser(
+    client: &reqwest::Client,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
+    let response = client
+        .get("http://127.0.0.1:8080/json/version")
+        .send()
+        .await
+        .map_err(|error| format!("CEF version endpoint unavailable: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("/json/version returned {}", response.status()));
+    }
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Invalid CEF version response: {error}"))?;
+    let url = value
+        .get("webSocketDebuggerUrl")
+        .and_then(Value::as_str)
+        .ok_or("CEF version response has no webSocketDebuggerUrl")?;
+    connect_async(url)
+        .await
+        .map(|(stream, _)| stream)
+        .map_err(|error| format!("CEF websocket connection failed: {error}"))
+}
+
 #[derive(Default)]
 pub struct Browser {
     tabs: Mutex<HashMap<String, Tab>>,
@@ -373,8 +527,12 @@ impl Browser {
             self.target_listed(cdp, id).await
         };
         if tab_gone(cdp, response, listed) {
+            cdp.stats.closed_tabs.fetch_add(1, Ordering::Relaxed);
             log::debug!("Tab {id} closed before it could {action}: {message}");
         } else {
+            if response.is_none() {
+                cdp.stats.no_answer.fetch_add(1, Ordering::Relaxed);
+            }
             log::warn!("Failed to {action} on tab {id}: {message}");
         }
     }
@@ -412,36 +570,23 @@ impl Browser {
                 return;
             }
         };
+        let mut outage = Outage::default();
         loop {
-            let connected = self.connection.lock().await.is_some();
-            if !connected {
-                match client
-                    .get("http://127.0.0.1:8080/json/version")
-                    .send()
-                    .await
-                {
-                    Ok(response) if response.status().is_success() => {
-                        match response.json::<Value>().await {
-                            Ok(value) => {
-                                if let Some(url) =
-                                    value.get("webSocketDebuggerUrl").and_then(Value::as_str)
-                                {
-                                    match connect_async(url).await {
-                                        Ok((stream, _)) => {
-                                            log::info!("Connected to Steam Browser");
-                                            self.connected(stream, backend.clone()).await;
-                                        }
-                                        Err(error) => {
-                                            log::debug!("CEF websocket connection failed: {error}")
-                                        }
-                                    }
-                                }
-                            }
-                            Err(error) => log::debug!("Invalid CEF version response: {error}"),
+            if self.connection.lock().await.is_none() {
+                match probe_browser(&client).await {
+                    Ok(stream) => {
+                        if let Some(line) = outage.recovered(Instant::now()) {
+                            log::info!("{line}");
+                        }
+                        log::info!("Connected to Steam Browser");
+                        self.connected(stream, backend.clone()).await;
+                    }
+                    Err(error) => {
+                        log::debug!("{error}");
+                        if let Some(line) = outage.failed(Instant::now(), &error) {
+                            log::warn!("{line}");
                         }
                     }
-                    Ok(response) => log::debug!("/json/version returned {}", response.status()),
-                    Err(error) => log::debug!("CEF version endpoint unavailable: {error}"),
                 }
             }
             tokio::time::sleep(Duration::from_secs(3)).await;
@@ -453,6 +598,7 @@ impl Browser {
         stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
         backend: Weak<Backend>,
     ) {
+        let started = Instant::now();
         let (mut sink, mut source) = stream.split();
         let (tx, mut outgoing) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(500);
@@ -463,6 +609,7 @@ impl Browser {
             next_id: AtomicU64::new(1),
             events,
             closed,
+            stats: Stats::default(),
         });
         *self.connection.lock().await = Some(Arc::clone(&cdp));
 
@@ -523,20 +670,45 @@ impl Browser {
         let mut closed_rx = cdp.closed.clone();
         let mut sanity = interval(Duration::from_secs(5));
         let mut health = interval(Duration::from_secs(30));
+        let mut lag = LagLog::default();
         sanity.tick().await;
         health.tick().await;
-        loop {
+        let reason = loop {
             tokio::select! {
                 event = event_rx.recv() => match event {
                     Ok(value) => self.handle_event(value, &cdp, backend.clone()).await,
-                    Err(broadcast::error::RecvError::Lagged(_)) => {},
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(count)) => {
+                        if let Some(line) = lag.dropped(count, Instant::now()) {
+                            log::warn!("{line}");
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break "the CDP event channel closed",
                 },
                 _ = sanity.tick() => self.sanity_check(&cdp, backend.clone()).await,
                 _ = health.tick() => self.health_tabs(&cdp, backend.clone()).await,
-                changed = closed_rx.changed() => if changed.is_err() || *closed_rx.borrow() { break; },
+                changed = closed_rx.changed() => {
+                    if changed.is_err() {
+                        break "the CDP connection dropped";
+                    }
+                    if *closed_rx.borrow() {
+                        break "the CDP socket closed";
+                    }
+                },
             }
-        }
+        };
+        log::info!(
+            "Steam Browser connection ended after {}: {reason}",
+            short_duration(started.elapsed())
+        );
+        let stats = &cdp.stats;
+        log::info!(
+            "Connection summary: {} tabs closed, {} commands without an answer, {} transaction retries, {} repairs, {} dropped events",
+            stats.closed_tabs.load(Ordering::Relaxed),
+            stats.no_answer.load(Ordering::Relaxed),
+            stats.retries.load(Ordering::Relaxed),
+            stats.repairs.load(Ordering::Relaxed),
+            lag.total
+        );
         self.tabs.lock().await.clear();
         self.pending_target_info.lock().await.clear();
         *self.connection.lock().await = None;
@@ -588,7 +760,8 @@ impl Browser {
                         .iter()
                         .find_map(|(id, tab)| (tab.session == session).then(|| id.clone()));
                     if let Some(id) = id {
-                        self.repair_tab(&id, backend).await;
+                        self.repair_tab(&id, cdp, backend, "the repair binding asked for it")
+                            .await;
                     }
                 }
             }
@@ -633,7 +806,7 @@ impl Browser {
                 if let Some(id) = event.pointer("/params/targetId").and_then(Value::as_str) {
                     self.pending_target_info.lock().await.remove(id);
                     if let Some(tab) = self.tabs.lock().await.remove(id) {
-                        log::info!("Disconnected from tab: {}", tab.title);
+                        log::info!("Disconnected from tab: {}", short_title(&tab.title));
                     }
                 }
             }
@@ -865,7 +1038,7 @@ impl Browser {
         if evaluate(cdp, &session, &source, true).await != Some(Value::Bool(true)) {
             log::warn!("Failed to install CSS repair watcher in current document on tab {id}");
         }
-        log::info!("Connected to tab: {title}");
+        log::info!("Connected to tab: {}", short_title(&title));
         if let Some(backend) = backend.upgrade() {
             backend.force_reinject(id).await;
         }
@@ -951,7 +1124,7 @@ impl Browser {
         self.tabs.lock().await.retain(|id, tab| {
             let keep = page_ids.contains(id);
             if !keep {
-                log::info!("Disconnected from tab: {}", tab.title);
+                log::info!("Disconnected from tab: {}", short_title(&tab.title));
             }
             keep
         });
@@ -1023,21 +1196,32 @@ impl Browser {
         {
             return;
         }
-        self.repair_tab(id, backend).await;
+        self.repair_tab(
+            id,
+            cdp,
+            backend,
+            "the health check found #test_css_loaded missing",
+        )
+        .await;
     }
 
-    async fn repair_tab(&self, id: &str, backend: Weak<Backend>) {
+    /// Restores a tab's styles. The caller knows why the repair is needed; the title says which
+    /// page, because a Steam window's target id means nothing in a log.
+    async fn repair_tab(&self, id: &str, cdp: &Arc<Cdp>, backend: Weak<Backend>, reason: &str) {
         if !self.repairs.lock().await.insert(id.to_owned()) {
             return;
         }
-        if self
+        let tab = self
             .tabs
             .lock()
             .await
             .get(id)
-            .is_some_and(|tab| tab.initialized)
+            .map(|tab| (tab.initialized, tab.title.clone()));
+        if let Some((true, title)) = tab
             && let Some(backend) = backend.upgrade()
         {
+            log::info!("Repairing tab {}: {reason}", short_title(&title));
+            cdp.stats.repairs.fetch_add(1, Ordering::Relaxed);
             backend.force_reinject(id).await;
         }
         self.repairs.lock().await.remove(id);
@@ -1100,9 +1284,10 @@ impl Browser {
             let removes = std::mem::take(&mut tab.pending_remove);
             (tab.session.clone(), adds, removes, tab.title.clone())
         };
-        log::info!(
+        log::log!(
+            transaction_level(adds.len(), removes.len()),
             "Committing css transaction on {} +{} -{}",
-            title,
+            short_title(&title),
             adds.len(),
             removes.len()
         );
@@ -1124,8 +1309,8 @@ impl Browser {
         while retry > 0 {
             retry -= 1;
             let cdp = self.connection.lock().await.clone();
-            if let Some(cdp) = cdp
-                && evaluate(&cdp, &session, &js, true).await.is_some()
+            if let Some(cdp) = &cdp
+                && evaluate(cdp, &session, &js, true).await.is_some()
             {
                 let styles_changed = {
                     let mut tabs = self.tabs.lock().await;
@@ -1148,9 +1333,14 @@ impl Browser {
                     changed
                 };
                 if styles_changed {
-                    self.update_preload_script(id, &cdp, &session).await;
+                    self.update_preload_script(id, cdp, &session).await;
                 }
                 return Value::String("Undefined".into());
+            }
+            // A pass that ends here is a retry, whether the command failed or there was no
+            // connection left to send it on.
+            if let Some(cdp) = &cdp {
+                cdp.stats.retries.fetch_add(1, Ordering::Relaxed);
             }
             log::warn!("Transaction failed! retrying in 0.2 seconds");
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1176,10 +1366,9 @@ impl Browser {
             let mut retry = 3;
             while retry > 0 {
                 retry -= 1;
-                if let Some(cdp) = self.connection.lock().await.clone()
-                    && evaluate(&cdp, &session, REMOVE_ALL_JS, true)
-                        .await
-                        .is_some()
+                let cdp = self.connection.lock().await.clone();
+                if let Some(cdp) = &cdp
+                    && evaluate(cdp, &session, REMOVE_ALL_JS, true).await.is_some()
                 {
                     let styles_changed = {
                         let mut tabs = self.tabs.lock().await;
@@ -1191,9 +1380,12 @@ impl Browser {
                         changed
                     };
                     if styles_changed {
-                        self.update_preload_script(&id, &cdp, &session).await;
+                        self.update_preload_script(&id, cdp, &session).await;
                     }
                     break;
+                }
+                if let Some(cdp) = &cdp {
+                    cdp.stats.retries.fetch_add(1, Ordering::Relaxed);
                 }
                 log::warn!("Transaction failed! retrying in 0.2 seconds");
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1342,6 +1534,7 @@ mod tests {
             next_id: AtomicU64::new(1),
             events,
             closed,
+            stats: Stats::default(),
         }
     }
 
@@ -1494,5 +1687,112 @@ mod tests {
         assert!(dropped.is_ok(), "the dead tab was never dropped");
         // It really did wait for the unanswered command, but inside the budget, not the 5 s default.
         assert!(started.elapsed() >= Duration::from_millis(500));
+    }
+
+    /// The browser is down for a while on every Steam restart while the loop probes it every 3 s.
+    /// One warning once the outage matters, one line when it ends, and nothing in between.
+    #[test]
+    fn a_long_outage_warns_once_and_reports_how_long_it_lasted() {
+        let mut outage = Outage::default();
+        let start = Instant::now();
+        assert_eq!(outage.failed(start, "connect refused"), None);
+        assert_eq!(
+            outage.failed(start + Duration::from_secs(27), "connect refused"),
+            None
+        );
+        let warning = outage
+            .failed(start + Duration::from_secs(30), "connect refused")
+            .expect("the outage should be reported after 30 s");
+        assert!(warning.contains("30s"), "{warning}");
+        assert!(warning.contains("connect refused"), "{warning}");
+        // Still down: no warning repeats, however long it takes or whatever the last error was.
+        for seconds in [60, 300, 3600] {
+            assert_eq!(
+                outage.failed(start + Duration::from_secs(seconds), "timed out"),
+                None
+            );
+        }
+        let recovery = outage
+            .recovered(start + Duration::from_secs(3660))
+            .expect("a reported outage should report its end");
+        assert!(recovery.contains("1h 1m"), "{recovery}");
+        // The next outage starts from zero, so a long one warns again.
+        assert_eq!(
+            outage.failed(start + Duration::from_secs(4000), "eof"),
+            None
+        );
+        assert!(
+            outage
+                .failed(start + Duration::from_secs(4030), "eof")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn an_outage_shorter_than_the_threshold_stays_quiet() {
+        let mut outage = Outage::default();
+        let start = Instant::now();
+        assert_eq!(outage.failed(start, "connect refused"), None);
+        assert_eq!(
+            outage.recovered(start + Duration::from_secs(6)),
+            None,
+            "a quiet failure must not pair with a recovery line"
+        );
+        // No probe ever failed: nothing to report either.
+        assert_eq!(outage.recovered(start + Duration::from_secs(9)), None);
+    }
+
+    /// A busy page can drop many events at once; the log gets one line per minute that carries the
+    /// sum of everything dropped so far in that window.
+    #[test]
+    fn lag_warnings_are_rate_limited_and_carry_the_sum() {
+        let mut lag = LagLog::default();
+        let start = Instant::now();
+        let first = lag
+            .dropped(5, start)
+            .expect("the first lag is worth a line");
+        assert!(first.contains("dropped 5 "), "{first}");
+        // Lags inside the window are summed, not logged.
+        assert_eq!(lag.dropped(7, start + Duration::from_secs(10)), None);
+        assert_eq!(lag.dropped(1, start + Duration::from_secs(59)), None);
+        // The first lag after the window reports what the quiet lags added up to.
+        let next = lag
+            .dropped(2, start + Duration::from_secs(60))
+            .expect("the window is over");
+        assert!(next.contains("10"), "{next}");
+        // The total keeps growing even while no line is due: the summary needs it.
+        assert_eq!(lag.total, 15);
+        assert_eq!(lag.dropped(3, start + Duration::from_secs(61)), None);
+        assert_eq!(lag.total, 18);
+        assert_eq!(lag.pending, 3);
+    }
+
+    #[test]
+    fn data_url_titles_are_shortened_on_a_character_boundary() {
+        // Ordinary titles are passed through untouched.
+        assert_eq!(
+            short_title("Steam Big Picture Mode").as_ref(),
+            "Steam Big Picture Mode"
+        );
+        // A data URL that already fits stays as it is.
+        let short = "data:text/html;base64,AA";
+        assert_eq!(short.len(), 24);
+        assert_eq!(short_title(short).as_ref(), short);
+        // Longer ones keep a recognisable prefix and say they were cut.
+        let long = "data:text/html,<html><body>hello</body></html>";
+        assert_eq!(short_title(long).as_ref(), "data:text/html,<html><bo…");
+        // Multi-byte text is cut between characters, never inside one.
+        let text = "data:text/plain,日本語のテキストです";
+        let shortened = short_title(text);
+        assert!(text.starts_with(shortened.trim_end_matches('…')));
+        assert_eq!(shortened.chars().count(), 25);
+        assert!(shortened.ends_with('…'));
+    }
+
+    #[test]
+    fn only_transactions_with_changes_log_at_info() {
+        assert_eq!(transaction_level(0, 0), log::Level::Debug);
+        assert_eq!(transaction_level(1, 0), log::Level::Info);
+        assert_eq!(transaction_level(0, 2), log::Level::Info);
     }
 }
