@@ -1435,8 +1435,42 @@ async fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex as StdMutex};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    /// Every log line of the test process. The connection footer names nothing a parallel test could
+    /// not also produce, so the tests that open connections take turns instead of filtering.
+    static LOGS: LazyLock<StdMutex<Vec<(log::Level, String)>>> = LazyLock::new(|| {
+        // No other test installs a logger, so this one sees every record.
+        let _ = log::set_logger(&TEST_LOGGER);
+        log::set_max_level(log::LevelFilter::Trace);
+        StdMutex::new(Vec::new())
+    });
+    static CONNECTION_TESTS: Mutex<()> = Mutex::const_new(());
+
+    struct TestLogger;
+
+    static TEST_LOGGER: TestLogger = TestLogger;
+
+    impl log::Log for TestLogger {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record) {
+            LOGS.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((record.level(), record.args().to_string()));
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// A test that opens a connection owns the connection footer until it finishes.
+    async fn connection_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        CONNECTION_TESTS.lock().await
+    }
 
     /// Scripted CDP endpoint with one Steam popup, shaped like a live Big Picture window:
     /// the target URL is about:blank while the document reports the opener's URL.
@@ -1521,6 +1555,57 @@ mod tests {
             ws.send(Message::Text(response.to_string().into()))
                 .await
                 .unwrap();
+        }
+    }
+
+    /// Scripted CDP endpoint that loses one tab mid-attach and then the whole connection: the plugin
+    /// counts the closed tab, and the connection footer describes it on the way out.
+    async fn fake_dying_connection_cdp(listener: TcpListener) {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        let info = json!({"targetId": "doomed", "type": "page", "title": "Doomed tab", "url": "about:blank"});
+        let mut attached = false;
+        let mut target_lists = 0;
+        while let Some(Ok(Message::Text(text))) = ws.next().await {
+            let command: Value = serde_json::from_str(&text).unwrap();
+            let method = command["method"].as_str().unwrap_or_default();
+            if method == "Runtime.enable" {
+                // Never answered: the tab closed before it could enable the domain.
+                continue;
+            }
+            let result = match method {
+                "Target.getTargets" => {
+                    target_lists += 1;
+                    // The first list attaches the tab; the liveness query after the silent command
+                    // must show it gone, or the failure would be a warning instead.
+                    if attached {
+                        json!({"targetInfos": []})
+                    } else {
+                        json!({"targetInfos": [info]})
+                    }
+                }
+                "Target.attachToTarget" => {
+                    attached = true;
+                    let event = json!({
+                        "method": "Target.attachedToTarget",
+                        "params": {"sessionId": "session", "targetInfo": info}
+                    });
+                    ws.send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                    json!({"sessionId": "session"})
+                }
+                _ => json!({}),
+            };
+            let response = json!({"id": command["id"], "result": result});
+            ws.send(Message::Text(response.to_string().into()))
+                .await
+                .unwrap();
+            if target_lists == 2 {
+                // The tab's failure is decided by now; the browser goes away next.
+                let _ = ws.close(None).await;
+                break;
+            }
         }
     }
 
@@ -1634,6 +1719,7 @@ mod tests {
 
     #[tokio::test]
     async fn initializes_popup_whose_document_url_differs_from_target_url() {
+        let _serial = connection_test_lock().await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         tokio::spawn(fake_steam_popup_cdp(listener));
@@ -1661,6 +1747,7 @@ mod tests {
     /// must give up inside the attach budget, and the tab must be dropped once the target is gone.
     #[tokio::test]
     async fn unanswered_attach_command_gives_up_within_the_attach_budget() {
+        let _serial = connection_test_lock().await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         tokio::spawn(fake_dying_tab_cdp(listener));
@@ -1794,5 +1881,52 @@ mod tests {
         assert_eq!(transaction_level(0, 0), log::Level::Debug);
         assert_eq!(transaction_level(1, 0), log::Level::Info);
         assert_eq!(transaction_level(0, 2), log::Level::Info);
+    }
+
+    /// A running plugin never shows these lines: the SDK aborts the main task on stop, so
+    /// `connected` never reaches its footer. Drive one connection to its end here and assert what
+    /// it says, including the tab it lost, and that the Browser can connect again afterwards.
+    #[tokio::test]
+    async fn a_finished_connection_logs_its_reason_and_summary() {
+        let _serial = connection_test_lock().await;
+        let baseline = LOGS.lock().unwrap_or_else(|error| error.into_inner()).len();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(fake_dying_connection_cdp(listener));
+        let (stream, _) = connect_async(url).await.unwrap();
+        let browser = Browser::new();
+        let connection = Arc::clone(&browser);
+        let finished = tokio::spawn(async move { connection.connected(stream, Weak::new()).await });
+        timeout(Duration::from_secs(10), finished)
+            .await
+            .expect("the connection should end when the browser closes it")
+            .expect("the connection task should not panic");
+
+        // Only records from this connection are asserted; the lock keeps other connection tests out.
+        let records: Vec<(log::Level, String)> = {
+            let logs = LOGS.lock().unwrap_or_else(|error| error.into_inner());
+            logs[baseline.min(logs.len())..].to_vec()
+        };
+        let info: Vec<&str> = records
+            .iter()
+            .filter(|(level, _)| *level == log::Level::Info)
+            .map(|(_, line)| line.as_str())
+            .collect();
+        let ended = info
+            .iter()
+            .find(|line| line.starts_with("Steam Browser connection ended after "))
+            .expect("the end of the connection should be logged");
+        assert!(ended.ends_with(": the CDP socket closed"), "{ended}");
+        let summary = info
+            .iter()
+            .find(|line| line.starts_with("Connection summary: "))
+            .expect("the connection summary should be logged");
+        assert_eq!(
+            *summary,
+            "Connection summary: 1 tabs closed, 0 commands without an answer, 0 transaction retries, 0 repairs, 0 dropped events"
+        );
+        // Ready to reconnect: nothing from the old connection is left behind.
+        assert!(browser.tabs.lock().await.is_empty());
+        assert!(browser.connection.lock().await.is_none());
     }
 }
